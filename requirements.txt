@@ -1,0 +1,14 @@
+requests
+filelock
+tqdm
+timm
+ftfy
+regex
+scipy
+scikit-image
+pycocotools
+opencv-python
+tokenizers
+h5py
+Pillow
+numpy
