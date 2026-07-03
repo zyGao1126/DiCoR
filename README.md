@@ -2,11 +2,11 @@
 
 Official release code for **DiCoR: Decoupled Referent Disambiguation and Contour Recalibration for Efficient Referring Remote Sensing Image Segmentation**.
 
-[Overview](Overview.pdf)
+![DiCoR Overview](Overview.png)
 
 ## Environment
 
-create a new conda envirenment and install the main dependencies:
+Create a new conda envirenment and install the main dependencies:
 
 ```bash
 conda create -n dicor python=3.9 -y
