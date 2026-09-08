@@ -3,12 +3,6 @@ import re
 
 import numpy as np
 import torch
-
-
-PROMPT_BANK_SCALE = 255.0
-DEFAULT_PROMPT_HW = (120, 120)
-
-
 class PromptBank:
     """Uint8 offline prompt bank backed by memmap snapshots."""
 
@@ -33,7 +27,7 @@ class PromptBank:
         if not files:
             raise FileNotFoundError(f"No prompt snapshots found in {self.bank_dir}; expected files like ep10.mmap")
 
-        h, w = DEFAULT_PROMPT_HW
+        h, w = (120, 120)
         sample_count = None
         snapshots = []
         for epoch, name in files:
@@ -77,7 +71,7 @@ class PromptBank:
             mm = self._open_mm(int(sid))
             sel = sid_cpu == int(sid)
             arr = mm[idx_cpu[sel].numpy()]
-            out[sel] = torch.from_numpy(arr.astype(np.float32) / PROMPT_BANK_SCALE).unsqueeze(1)
+            out[sel] = torch.from_numpy(arr.astype(np.float32) / 255.0).unsqueeze(1)
 
         return out.to(device=device, non_blocking=True)
 

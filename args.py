@@ -4,7 +4,6 @@ import os
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", default="cuda:1")
-    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset", default="risbench", choices=["risbench", "rrsisd", "refsegrs"])
     parser.add_argument("--refer-data-root", "--refer_data_root", required=True)
     parser.add_argument("--img-size", "--img_size", type=int, default=480)
@@ -32,6 +31,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def baseline_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("Train the coarse DiCoR baseline")
     add_common_args(parser)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--batch-size", "-b", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=40)
@@ -41,9 +41,23 @@ def baseline_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def offline_bank_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser("Build offline data for LCR and DLG module training")
+    add_common_args(parser)
+    parser.add_argument("--bank-type", choices=("lcr", "dlg", "all"), default="all")
+    parser.add_argument("--coarse-dir", default="")
+    parser.add_argument("--coarse-ckpt", default="")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--batch-size", "-b", type=int, default=16)
+    parser.add_argument("--snapshot-epochs", default="10,15,20,30,39")
+    parser.add_argument("--lcr-iou-range", type=float, nargs=2, default=(0.5, 0.99), metavar=("MIN", "MAX"))
+    return parser
+
+
 def refiner_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("Train the refiner from an offline prompt bank")
     add_common_args(parser)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--coarse-ckpt", required=True)
     parser.add_argument("--prompt-bank-dir", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -57,6 +71,7 @@ def refiner_parser() -> argparse.ArgumentParser:
 def localization_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("Jointly train the localization guide with the coarse branch")
     add_common_args(parser)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--coarse-ckpt", required=True)
     parser.add_argument("--prompt-bank-dir", required=True)
     parser.add_argument("--output-dir", required=True)

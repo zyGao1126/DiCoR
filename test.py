@@ -1,7 +1,7 @@
 import torch
 
 from args import test_parser
-from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device, set_random_seed
+from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device
 
 def load_refiner_weights(model, ckpt_path: str):
     state = torch.load(ckpt_path, map_location="cpu")
@@ -15,7 +15,6 @@ def load_refiner_weights(model, ckpt_path: str):
 
 def main():
     args = test_parser().parse_args()
-    set_random_seed(args.seed)
     device = resolve_device(args.device)
 
     use_refiner = bool(args.refiner_ckpt)

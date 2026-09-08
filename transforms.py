@@ -103,6 +103,8 @@ class CenterCrop(object):
 class ToTensor(object):
     def __call__(self, image, target):
         image = F.to_tensor(image)
+        if target is None:
+            return image, target
         if isinstance(target, dict):
             if "gold_masks" in target:
                 target["gold_masks"] = torch.as_tensor(np.array(target["gold_masks"]), dtype=torch.int64)
@@ -140,4 +142,3 @@ class Normalize(object):
     def __call__(self, image, target):
         image = F.normalize(image, mean=self.mean, std=self.std)
         return image, target
-

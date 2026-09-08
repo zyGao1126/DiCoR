@@ -82,7 +82,7 @@ def main():
 
     train_base = make_dataset(args, "train")
     test_ds = make_dataset(args, "test")
-    bank = PromptBank(args.prompt_bank_dir, split="refiner")
+    bank = PromptBank(args.prompt_bank_dir, split="LCR")
     if len(train_base) != bank.N:
         raise RuntimeError(f"PromptBank N={bank.N} does not match train dataset length={len(train_base)}.")
     if not bank.has_valid_prompts():

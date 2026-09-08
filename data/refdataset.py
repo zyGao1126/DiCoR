@@ -20,6 +20,7 @@ class ReferDataset(data.Dataset):
         self.image_transforms = image_transforms
         self.split = split
         self.data_root = args.refer_data_root
+        self.img_size = int(args.img_size)
 
         if args.dataset == "rrsisd":
             self.ann_file = f"datainfo/rrsisd_{split}.jsonl"
@@ -43,8 +44,9 @@ class ReferDataset(data.Dataset):
                 f"Annotation file not found: {self.ann_file}. "
                 f"Place it under ./datainfo or {os.path.join(self.data_root, 'datainfo')}."
             )
+        self.ann_path = os.path.abspath(ann_path)
 
-        with open(ann_path, "r", encoding="utf-8") as f:
+        with open(self.ann_path, "r", encoding="utf-8") as f:
             self.dataset = [json.loads(line) for line in f if line.strip()]
         self.tokenizer = BertTokenizer.from_pretrained(args.bert_tokenizer)
         self.processed_data = []
@@ -169,3 +171,20 @@ class ReferDataset(data.Dataset):
         }
         
         return result
+
+    def get_coarse_context_item(self, index):
+        """Load only the image and language used by frozen coarse inference."""
+        if self.image_transforms is None:
+            raise RuntimeError("Coarse-context preprocessing requires image transforms")
+
+        item = self.processed_data[index]
+        img_path = os.path.join(self.image_root, item['file_name'])
+        image = Image.open(img_path).convert("RGB")
+        image, _ = self.image_transforms(image, None)
+        text_inputs = item['text_inputs']
+        return {
+            'image': image,
+            'tensor_embeddings': text_inputs['input_ids'],
+            'attention_mask': text_inputs['attention_mask'],
+            'index': index,
+        }
