@@ -10,7 +10,7 @@ COARSE_CKPT=${COARSE_CKPT:-$BANK/coarse/coarse_best.pth}
 DATASET=${DATASET:-refsegrs}
 DEVICE=${DEVICE:-cuda:0}
 IMG_SIZE=${IMG_SIZE:-480}
-NUM_TMEM=${NUM_TMEM:-3}
+NUM_VMSF_BLOCKS=${NUM_VMSF_BLOCKS:-3}
 BATCH_SIZE=${BATCH_SIZE:-8}
 GUIDE_PRETRAIN_EPOCHS=${GUIDE_PRETRAIN_EPOCHS:-40}
 EPOCHS=${EPOCHS:-10}
@@ -23,7 +23,7 @@ python train_localization_guide.py \
   --refer-data-root "$DATA" \
   --img-size "$IMG_SIZE" \
   --window12 \
-  --num-tmem "$NUM_TMEM" \
+  --num-vmsf-blocks "$NUM_VMSF_BLOCKS" \
   --batch-size "$BATCH_SIZE" \
   --guide-pretrain-epochs "$GUIDE_PRETRAIN_EPOCHS" \
   --epochs "$EPOCHS" \

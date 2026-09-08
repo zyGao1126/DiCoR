@@ -1,7 +1,7 @@
 import torch
 from .mask_predictor import SimpleDecoding
 from .refiner import RefineUNet
-from .backbone import MultiModalSwinTransformerV2
+from .backbone import MultiModalSwinTransformer
 from ._utils import DiCoRCoarse, DiCoRRefinerTrain, DiCoRRefinerTest
 from .localization_guidance import build_localization_guidance, load_localization_guidance
 import os
@@ -59,18 +59,18 @@ def _build_dicor_components(pretrained, pretrained_refineHead, args, cfg=None, w
     embed_dim, depths, num_heads = _swin_hyper_by_type(args.swin_type)
     window_size = _window_size(pretrained, args)
     out_indices = (0, 1, 2, 3)
-    backbone = MultiModalSwinTransformerV2(
+    backbone = MultiModalSwinTransformer(
         embed_dim=embed_dim,
         depths=depths,
         swin_num_heads=num_heads,
         window_size=window_size,
-        num_tmem=args.num_tmem,
+        num_vmsf_blocks=args.num_vmsf_blocks,
         num_heads_fusion=args.num_heads_fusion,
         out_indices=out_indices,
         drop_path_rate=0.3,
         patch_norm=True,
         use_checkpoint=False,
-        use_lvmsf=cfg.coarse.use_lvmsf,
+        visual_fusion=cfg.coarse.visual_fusion,
     )
 
     if pretrained:

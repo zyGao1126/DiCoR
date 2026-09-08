@@ -16,7 +16,7 @@ from engine import (
     model_cfg,
     resolve_device,
     save_training_checkpoint,
-    seed_everything,
+    set_random_seed,
 )
 from prompt_bank import PromptBank
 
@@ -191,7 +191,7 @@ def save_adapter(path: str, adapter) -> None:
 
 def main():
     args = localization_parser().parse_args()
-    seed_everything(args.seed)
+    set_random_seed(args.seed)
     device = resolve_device(args.device)
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -229,7 +229,7 @@ def main():
         pretrained=args.pretrained_swin_weights,
         pretrained_refineHead="",
         args=args,
-        cfg=model_cfg(use_lvmsf=False),
+        cfg=model_cfg(visual_fusion=args.visual_fusion),
     ).to(device)
     load_model_weights(feature_model, args.coarse_ckpt, label="Guide pretrain coarse")
     set_requires_grad(feature_model, False)
@@ -247,7 +247,7 @@ def main():
             pretrained=args.pretrained_swin_weights,
             pretrained_refineHead="",
             args=args,
-            cfg=model_cfg(use_lvmsf=False, use_localization=True, alpha=args.alpha),
+            cfg=model_cfg(visual_fusion=args.visual_fusion, use_localization=True, alpha=args.alpha),
         ).to(device)
         load_model_weights(eval_model, args.coarse_ckpt, label="Guide inject eval coarse")
         set_requires_grad(eval_model, False)
@@ -281,7 +281,7 @@ def main():
         pretrained=args.pretrained_swin_weights,
         pretrained_refineHead="",
         args=args,
-        cfg=model_cfg(use_lvmsf=True, use_localization=True, alpha=args.alpha),
+        cfg=model_cfg(visual_fusion="lvmsf", use_localization=True, alpha=args.alpha),
     ).to(device)
     load_model_weights(model, args.coarse_ckpt, label="Localization coarse")
     model.backbone.localization_guidance.load_state_dict(adapter.state_dict(), strict=True)

@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 
 from args import refiner_parser
 from data.dataloader_util import colllate_fn_custom
-from engine import build_poly_scheduler, evaluate_segmentation, load_model_weights, make_dataset, model_cfg, resolve_device, seed_everything
+from engine import build_poly_scheduler, evaluate_segmentation, load_model_weights, make_dataset, model_cfg, resolve_device, set_random_seed
 from prompt_bank import PromptBank
 
 
@@ -63,7 +63,7 @@ def evaluate_refiner(args, refine_head_state, test_loader, device):
         pretrained=args.pretrained_swin_weights,
         pretrained_refineHead="",
         args=args,
-        cfg=model_cfg(use_lvmsf=False),
+        cfg=model_cfg(visual_fusion=args.visual_fusion),
     ).to(device)
     load_model_weights(model, args.coarse_ckpt, label="RefinerEval coarse")
     model.refineHead.load_state_dict(refine_head_state, strict=True)
@@ -72,7 +72,7 @@ def evaluate_refiner(args, refine_head_state, test_loader, device):
 
 def main():
     args = refiner_parser().parse_args()
-    seed_everything(args.seed)
+    set_random_seed(args.seed)
     device = resolve_device(args.device)
     os.makedirs(args.output_dir, exist_ok=True)
 

@@ -6,7 +6,6 @@ import numpy as np
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from .mmcv_custom import load_checkpoint
 from typing import Optional
-from .text_aware_multiscale_enhancement import TMEM
 from .visual_multiscale_enhancement import VMSF, LVMSF
 from typing import List
 from .backbone_util import *
@@ -232,7 +231,7 @@ class PatchEmbed(nn.Module):
         return x
 
 
-class MultiModalSwinTransformerV2(nn.Module):
+class MultiModalSwinTransformer(nn.Module):
     def __init__(self, **swin_kwargs):
         super().__init__()
 
@@ -243,10 +242,10 @@ class MultiModalSwinTransformerV2(nn.Module):
         self.out_indices    = tuple(swin_kwargs.get('out_indices', (0, 1, 2, 3)))
         self.drop_path_rate = swin_kwargs.get('drop_path_rate', 0.3)
         self.patch_norm     = swin_kwargs.get('patch_norm', True)
-        self.num_tmem       = swin_kwargs.get('num_tmem', 3)
+        self.num_vmsf_blocks = swin_kwargs.get('num_vmsf_blocks', 3)
         self.num_heads_fusion = swin_kwargs.get('num_heads_fusion', 1)
         self.use_checkpoint = swin_kwargs.get('use_checkpoint', False)
-        self.use_lvmsf = swin_kwargs.get('use_lvmsf', False)
+        self.visual_fusion = swin_kwargs.get('visual_fusion', 'lvmsf')
 
         self.text_feat_dim  = 768
         self.num_layers = len(self.depths)        
@@ -285,10 +284,12 @@ class MultiModalSwinTransformerV2(nn.Module):
         num_features = [int(self.embed_dim * 2 ** i) for i in range(self.num_layers)]
         for i_layer in self.out_indices:
             self.add_module(f'norm{i_layer}', nn.LayerNorm(num_features[i_layer]))
-        if self.use_lvmsf:
-            self.VMSF = LVMSF(num_features, num_blocks=self.num_tmem, text_dim=self.text_feat_dim)
+        if self.visual_fusion == 'lvmsf':
+            self.VMSF = LVMSF(num_features, num_blocks=self.num_vmsf_blocks, text_dim=self.text_feat_dim)
+        elif self.visual_fusion == 'vmsf':
+            self.VMSF = VMSF(num_features, num_blocks=self.num_vmsf_blocks)
         else:
-            self.VMSF = VMSF(num_features, num_blocks=self.num_tmem)
+            raise ValueError(f"Unknown visual fusion: {self.visual_fusion}")
         self.localization_guidance = None
 
     def set_localization_guidance(self, module):
@@ -330,7 +331,6 @@ class MultiModalSwinTransformerV2(nn.Module):
 
             x_result = layer(**layer_kwargs)
             x_out, Wh, Ww, x = x_result['x_out'], x_result['Wh'], x_result['Ww'], x_result['x']
-            l_feats_cur = x_result.get('l_feat', l_feats_cur)
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
@@ -350,10 +350,10 @@ class MultiModalSwinTransformerV2(nn.Module):
                 input_ids=input_ids,
                 l_mask=l_mask,
                 updated_l_feats=l_feats_cur,
-                guide_text=self.use_lvmsf,
+                guide_text=self.visual_fusion == 'lvmsf',
             )
         
-        if self.use_lvmsf:
+        if self.visual_fusion == 'lvmsf':
             outs, l_feats_cur = self.VMSF(outs, l_feats=guided_l_feats, l_mask=l_mask)
         else:
             outs = self.VMSF(outs)
@@ -370,7 +370,7 @@ class MultiModalSwinTransformerV2(nn.Module):
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""
-        super(MultiModalSwinTransformerV2, self).train(mode)
+        super().train(mode)
         # self._freeze_stages()
 
 class CascadedMMBasicLayer(nn.Module):
@@ -426,10 +426,6 @@ class CascadedMMBasicLayer(nn.Module):
         )
         return PWAM(*common_args, **common_kwargs)
 
-    @staticmethod
-    def _forward_fusion_block(module, x, l_feats, mask, H, W, **extra):
-        return module(x, l_feats, mask)
-
     def create_attention_mask(self, H, W, device):
         """创建Swin Transformer的attention mask"""
         Hp = int(np.ceil(H / self.window_size)) * self.window_size
@@ -456,14 +452,10 @@ class CascadedMMBasicLayer(nn.Module):
         
         return attn_mask
 
-    def _fuse_single_global(self, x_swin, l_feats, l_mask, H, W):
-        x_global, aux = self._forward_fusion_block(
-            self.fusion_global, x_swin, l_feats, l_mask, H, W
-        )
-
+    def _fuse_single_global(self, x_swin, l_feats, l_mask):
+        x_global = self.fusion_global(x_swin, l_feats, l_mask)
         x_out_gate = self.res_gate(x_global) * x_global
-        l_next = aux.get('l_new', l_feats)
-        return x_global, x_swin + x_out_gate, l_next
+        return x_global, x_swin + x_out_gate
 
     def forward(self, **kwargs):
         x = kwargs['x']
@@ -476,17 +468,15 @@ class CascadedMMBasicLayer(nn.Module):
         _, HW, _ = x_swin.shape
         assert HW == H * W
 
-        x_out, x_next, l_next = self._fuse_single_global(
-            x_swin, l_feats, l_mask, H, W
-        )
+        x_out, x_next = self._fuse_single_global(x_swin, l_feats, l_mask)
 
         if self.downsample is not None:
             x_down = self.downsample(x_next, H, W)
             Wh, Ww = (H + 1) // 2, (W + 1) // 2
-            result = {'x_out': x_out, 'Wh': Wh, 'Ww': Ww, 'x': x_down, 'l_feat': l_next}
+            result = {'x_out': x_out, 'Wh': Wh, 'Ww': Ww, 'x': x_down}
         else:
             Wh, Ww = H, W
-            result = {'x_out': x_out, 'Wh': Wh, 'Ww': Ww, 'x': x_next, 'l_feat': l_next}
+            result = {'x_out': x_out, 'Wh': Wh, 'Ww': Ww, 'x': x_next}
         return result
 
     def apply_swin_blocks(self, x, H, W, attn_mask):
@@ -500,7 +490,7 @@ class CascadedMMBasicLayer(nn.Module):
 
 class PWAM(nn.Module):
     def __init__(self, dim, v_in_channels, l_in_channels, key_channels, value_channels,
-                 num_heads=0, dropout=0.0, enable_text_update=False, l2v_attn_dim=256, l2v_heads=4):
+                 num_heads=0, dropout=0.0):
         super(PWAM, self).__init__()
         # input x shape: (B, H*W, dim)
         self.vis_project = nn.Sequential(nn.Conv1d(dim, dim, 1, 1),  # the init function sets bias to 0 if bias is True
@@ -520,26 +510,6 @@ class PWAM(nn.Module):
                                         nn.Dropout(dropout)
                                         )
 
-        self.enable_text_update = enable_text_update
-        if self.enable_text_update:
-            attn_dim = min(l2v_attn_dim, dim)
-            self.l_q = nn.Linear(l_in_channels, attn_dim, bias=False)
-            self.v_kv = nn.Linear(dim, attn_dim, bias=False)
-            self.l2v_attn = nn.MultiheadAttention(
-                embed_dim=attn_dim,
-                num_heads=l2v_heads,
-                dropout=dropout,
-                batch_first=False,
-            )
-            self.l_out = nn.Sequential(
-                nn.Linear(attn_dim, l_in_channels, bias=False),
-                nn.LayerNorm(l_in_channels)
-            )
-            self.l_gate = nn.Sequential(
-                nn.Linear(l_in_channels, l_in_channels, bias=False),
-                nn.Tanh()
-            )
-
     def forward(self, x, l, l_mask):
         # input x shape: (B, H*W, dim)
         vis = self.vis_project(x.permute(0, 2, 1))  # (B, dim, H*W)
@@ -553,24 +523,7 @@ class PWAM(nn.Module):
 
         mm = mm.permute(0, 2, 1)  # (B, H*W, dim)
 
-        if not self.enable_text_update:
-            return mm, {}
-
-        l_tok = l.permute(0, 2, 1).contiguous()
-        l_valid = (l_mask > 0)
-        query = self.l_q(l_tok).transpose(0, 1)
-        kv = self.v_kv(x).transpose(0, 1)
-        delta, _ = self.l2v_attn(query, kv, kv, need_weights=False)
-        delta = delta.transpose(0, 1)
-        delta = self.l_out(delta)
-        gate = self.l_gate(delta)
-        l_new = l_tok + gate * delta
-        l_new = torch.where(l_valid, l_new, l_tok)
-        l_new = l_new.permute(0, 2, 1).contiguous()
-
-        aux = {'l_new': l_new}
-
-        return mm, aux
+        return mm
 
 class SpatialImageLanguageAttention(nn.Module):
     def __init__(self, v_in_channels, l_in_channels, key_channels, value_channels, out_channels=None, num_heads=1):

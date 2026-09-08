@@ -11,9 +11,9 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 import transforms as T
 import utils
 from data.dataloader_util import colllate_fn_custom
+from data.refdataset import ReferDataset
 
-
-def seed_everything(seed: int) -> None:
+def set_random_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -28,9 +28,9 @@ def resolve_device(device_name: str) -> torch.device:
     return device
 
 
-def model_cfg(use_lvmsf: bool = False, locate_ckpt: str = "", alpha: float = 0.5, use_localization: bool = False):
+def model_cfg(visual_fusion: str, locate_ckpt: str = "", alpha: float = 0.5, use_localization: bool = False):
     return SimpleNamespace(
-        coarse=SimpleNamespace(use_lvmsf=bool(use_lvmsf)),
+        coarse=SimpleNamespace(visual_fusion=visual_fusion),
         use_localization_guidance=bool(use_localization or locate_ckpt),
         locate_ckpt=locate_ckpt or "",
         alpha=float(alpha),
@@ -48,8 +48,6 @@ def get_transform(img_size: int):
 
 
 def make_dataset(args, split: str):
-    from data.refdataset import ReferDataset
-
     return ReferDataset(args, None, image_transforms=get_transform(int(args.img_size)), split=split)
 
 

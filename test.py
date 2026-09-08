@@ -1,10 +1,7 @@
-import os
-
 import torch
 
 from args import test_parser
-from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device, seed_everything
-
+from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device, set_random_seed
 
 def load_refiner_weights(model, ckpt_path: str):
     state = torch.load(ckpt_path, map_location="cpu")
@@ -18,13 +15,17 @@ def load_refiner_weights(model, ckpt_path: str):
 
 def main():
     args = test_parser().parse_args()
-    seed_everything(args.seed)
+    set_random_seed(args.seed)
     device = resolve_device(args.device)
-    os.makedirs(args.visual_dir, exist_ok=True)
 
     use_refiner = bool(args.refiner_ckpt)
     use_locate = bool(args.locate_ckpt)
-    cfg = model_cfg(use_lvmsf=use_locate, locate_ckpt=args.locate_ckpt, alpha=args.alpha, use_localization=use_locate)
+    cfg = model_cfg(
+        visual_fusion=args.visual_fusion,
+        locate_ckpt=args.locate_ckpt,
+        alpha=args.alpha,
+        use_localization=use_locate,
+    )
 
     from lib import segmentation
 

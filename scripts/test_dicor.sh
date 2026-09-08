@@ -12,7 +12,7 @@ DATASET=${DATASET:-refsegrs}
 SPLIT=${SPLIT:-test}
 DEVICE=${DEVICE:-cuda:0}
 IMG_SIZE=${IMG_SIZE:-480}
-NUM_TMEM=${NUM_TMEM:-3}
+NUM_VMSF_BLOCKS=${NUM_VMSF_BLOCKS:-3}
 BATCH_SIZE=${BATCH_SIZE:-16}
 
 python test.py \
@@ -22,7 +22,7 @@ python test.py \
   --refer-data-root "$DATA" \
   --img-size "$IMG_SIZE" \
   --window12 \
-  --num-tmem "$NUM_TMEM" \
+  --num-vmsf-blocks "$NUM_VMSF_BLOCKS" \
   --batch-size "$BATCH_SIZE" \
   --coarse-ckpt "$COARSE_CKPT" \
   --refiner-ckpt "$REFINER_CKPT" \

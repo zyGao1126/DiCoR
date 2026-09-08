@@ -37,19 +37,6 @@ class _DiCoRBase(nn.Module):
         coarse_logits_480 = F.interpolate(coarse_logits_120, size=input_shape, mode='bilinear', align_corners=True)
         return coarse_logits_120, coarse_logits_480
 
-    @staticmethod
-    def _dilate01(x01: torch.Tensor, r: int):
-        if r <= 0:
-            return x01
-        k = 2 * r + 1
-        return F.max_pool2d(x01, kernel_size=k, stride=1, padding=r)
-
-    @staticmethod
-    def _erode01(x01: torch.Tensor, r: int):
-        if r <= 0:
-            return x01
-        return 1.0 - _DiCoRBase._dilate01(1.0 - x01, r)
-
 
 class DiCoRCoarse(_DiCoRBase):
     def forward(self,
