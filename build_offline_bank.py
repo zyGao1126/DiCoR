@@ -21,8 +21,9 @@ from engine import (
 )
 from lib import segmentation
 
-class CoarseContextDataset(Dataset):
-    """Image-and-text view used to cache frozen coarse features."""
+
+class DLGInputDataset(Dataset):
+    """Image-and-text inputs used to extract the frozen DLG features."""
 
     def __init__(self, dataset):
         self.dataset = dataset
@@ -31,10 +32,10 @@ class CoarseContextDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        return self.dataset.get_coarse_context_item(index)
+        return self.dataset.get_dlg_input(index)
 
 
-class LocalizationShardWriter:
+class DLGFeatureWriter:
     def __init__(self, output_dir: Path, shard_size: int):
         if shard_size <= 0:
             raise ValueError("shard_size must be positive")
@@ -42,8 +43,7 @@ class LocalizationShardWriter:
         self.shard_size = int(shard_size)
         self.pending = []
         self.pending_rows = 0
-        self.shards = []
-        self.feature_shape = None
+        self.shard_count = 0
 
         output_dir.mkdir(parents=True, exist_ok=True)
         if any(output_dir.iterdir()):
@@ -52,16 +52,10 @@ class LocalizationShardWriter:
                 "Use a new directory to avoid mixing different cache versions."
             )
 
-    def add(self, context: torch.Tensor) -> None:
-        context = context.detach().to(device="cpu", dtype=torch.float16).contiguous()
-        shape = tuple(int(value) for value in context.shape[1:])
-        if self.feature_shape is None:
-            self.feature_shape = shape
-        elif shape != self.feature_shape:
-            raise ValueError(f"Inconsistent localization context shape: {shape} != {self.feature_shape}")
-
-        self.pending.append(context)
-        self.pending_rows += int(context.shape[0])
+    def add(self, features: torch.Tensor) -> None:
+        features = features.detach().to(device="cpu", dtype=torch.float16).contiguous()
+        self.pending.append(features)
+        self.pending_rows += int(features.shape[0])
         while self.pending_rows >= self.shard_size:
             self._flush(self.shard_size)
 
@@ -71,17 +65,16 @@ class LocalizationShardWriter:
         self.pending = [merged[rows:].contiguous()] if merged.shape[0] > rows else []
         self.pending_rows -= rows
 
-        filename = f"shard_{len(self.shards):04d}.pt"
+        filename = f"shard_{self.shard_count:04d}.pt"
         path = self.output_dir / filename
         temporary = path.with_suffix(".pt.tmp")
         torch.save(shard, temporary)
         os.replace(temporary, path)
-        self.shards.append({"file": filename, "rows": int(rows)})
+        self.shard_count += 1
 
     def finish(self):
         if self.pending_rows:
             self._flush(self.pending_rows)
-        return self.shards
 
 
 def write_json(path: Path, payload) -> None:
@@ -132,10 +125,10 @@ def model_record(args) -> dict:
 
 
 @torch.no_grad()
-def write_refiner_snapshot(model, loader, device, output_path: Path, iou_range, label: str) -> dict:
+def write_lcr_snapshot(model, loader, device, output_path: Path, iou_range, label: str) -> dict:
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
-    prompt_map = None
-    prompt_hw = None
+    probability_map = None
+    map_shape = None
     kept = 0
 
     try:
@@ -144,27 +137,27 @@ def write_refiner_snapshot(model, loader, device, output_path: Path, iou_range, 
             output = model(batch["image"], batch["text"], l_mask=batch["l_mask"])
             logits = output["coarse_logits_120"]
 
-            if prompt_map is None:
-                prompt_hw = tuple(int(value) for value in logits.shape[-2:])
-                prompt_map = np.memmap(
+            if probability_map is None:
+                map_shape = tuple(int(value) for value in logits.shape[-2:])
+                probability_map = np.memmap(
                     temporary,
                     mode="w+",
                     dtype=np.uint8,
-                    shape=(len(loader.dataset), *prompt_hw),
+                    shape=(len(loader.dataset), *map_shape),
                 )
 
             probability = torch.softmax(logits, dim=1)[:, 1]
-            iou = foreground_iou_from_logits(logits, batch["target"], prompt_hw)
+            iou = foreground_iou_from_logits(logits, batch["target"], map_shape)
             valid = (iou >= iou_range[0]) & (iou <= iou_range[1])
             probability = probability * valid.float().view(-1, 1, 1)
 
             indices = data["index"].long().cpu().numpy()
             values = np.clip(np.round(probability.detach().cpu().numpy() * 255.0), 0, 255.0).astype(np.uint8)
-            prompt_map[indices] = values
+            probability_map[indices] = values
             kept += int(valid.sum().item())
 
-        prompt_map.flush()
-        del prompt_map
+        probability_map.flush()
+        del probability_map
         os.replace(temporary, output_path)
     except Exception:
         if temporary.exists():
@@ -175,8 +168,8 @@ def write_refiner_snapshot(model, loader, device, output_path: Path, iou_range, 
     return {
         "file": output_path.name,
         "kept": kept,
-        "height": prompt_hw[0],
-        "width": prompt_hw[1],
+        "height": map_shape[0],
+        "width": map_shape[1],
     }
 
 
@@ -214,7 +207,7 @@ def build_lcr_bank(args, device: torch.device) -> None:
     for epoch in parse_epochs(args.snapshot_epochs):
         checkpoint = snapshot_path(args.coarse_dir, epoch)
         load_exact_weights(model, checkpoint, label=f"LCR snapshot ep{epoch}")
-        record = write_refiner_snapshot(
+        record = write_lcr_snapshot(
             model,
             loader,
             device,
@@ -222,8 +215,8 @@ def build_lcr_bank(args, device: torch.device) -> None:
             args.lcr_iou_range,
             label=f"LCR ep{epoch}",
         )
-        prompt_height = record.pop("height")
-        prompt_width = record.pop("width")
+        map_height = record.pop("height")
+        map_width = record.pop("width")
         record.update({"epoch": epoch, "checkpoint": file_record(checkpoint)})
         snapshots.append(record)
 
@@ -233,8 +226,8 @@ def build_lcr_bank(args, device: torch.device) -> None:
     manifest = {
         "kind": "refiner_probability",
         "sample_count": len(dataset),
-        "height": prompt_height,
-        "width": prompt_width,
+        "height": map_height,
+        "width": map_width,
         "iou_range": list(args.lcr_iou_range),
         "annotation_file": file_record(dataset.ann_path),
         "model": model_record(args),
@@ -244,20 +237,20 @@ def build_lcr_bank(args, device: torch.device) -> None:
 
 
 @torch.no_grad()
-def write_dlg_cache(model, args, device: torch.device) -> None:
+def write_dlg_features(model, args, device: torch.device) -> None:
     dataset = make_dataset(args, "train")
-    context_dataset = CoarseContextDataset(dataset)
+    input_dataset = DLGInputDataset(dataset)
     loader = DataLoader(
-        context_dataset,
+        input_dataset,
         batch_size=args.batch_size,
-        sampler=SequentialSampler(context_dataset),
+        sampler=SequentialSampler(input_dataset),
         num_workers=args.workers,
         pin_memory=args.pin_mem,
         drop_last=False,
         collate_fn=colllate_fn_custom,
     )
     output_dir = Path(args.output_dir).resolve() / "DLG"
-    writer = LocalizationShardWriter(output_dir, 256)
+    writer = DLGFeatureWriter(output_dir, 256)
     cached_rows = 0
 
     for data in tqdm(loader, desc="[OfflineBank] DLG", dynamic_ncols=True):
@@ -273,23 +266,12 @@ def write_dlg_cache(model, args, device: torch.device) -> None:
         text = data["tensor_embeddings"].to(device=device, non_blocking=True).squeeze(1)
         language_mask = data["attention_mask"].to(device=device, non_blocking=True)
         output = model(image, text, l_mask=language_mask)
-        context = output["x_pre_c3_star"]
+        features = output["x_pre_c3_star"]
 
-        writer.add(context)
-        cached_rows += int(context.shape[0])
+        writer.add(features)
+        cached_rows += int(features.shape[0])
 
-    shards = writer.finish()
-    manifest = {
-        "kind": "localization_context",
-        "cached_rows": cached_rows,
-        "dtype": "float16",
-        "feature_shape": list(writer.feature_shape or ()),
-        "coarse_checkpoint": file_record(args.coarse_ckpt),
-        "annotation_file": file_record(dataset.ann_path),
-        "model": model_record(args),
-        "shards": shards,
-    }
-    write_json(output_dir / "manifest.json", manifest)
+    writer.finish()
     print(f"[OfflineBank] DLG: cached {cached_rows} samples")
 
 
@@ -307,7 +289,7 @@ def build_dlg_bank(args, device: torch.device) -> None:
     model.eval()
     model.requires_grad_(False)
 
-    write_dlg_cache(model, args, device)
+    write_dlg_features(model, args, device)
 
 
 def main() -> None:

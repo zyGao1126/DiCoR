@@ -55,11 +55,11 @@ def offline_bank_parser() -> argparse.ArgumentParser:
 
 
 def refiner_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser("Train the refiner from an offline prompt bank")
+    parser = argparse.ArgumentParser("Train LCR from offline coarse probabilities")
     add_common_args(parser)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--coarse-ckpt", required=True)
-    parser.add_argument("--prompt-bank-dir", required=True)
+    parser.add_argument("--offline-bank-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--batch-size", "-b", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=40)

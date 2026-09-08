@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from args import refiner_parser
 from data.dataloader_util import colllate_fn_custom
 from engine import build_poly_scheduler, evaluate_segmentation, load_model_weights, make_dataset, model_cfg, resolve_device, set_random_seed
-from prompt_bank import PromptBank
+from offline_bank import LCRProbabilityBank
 
 
 def train_one_epoch(model, criterion, optimizer, scheduler, loader, bank, device, epoch, print_freq):
@@ -26,8 +26,14 @@ def train_one_epoch(model, criterion, optimizer, scheduler, loader, bank, device
         image = data["image"].to(device, non_blocking=True)
         target = data["target"].to(device, non_blocking=True)
         indices = data["index"].to(device, non_blocking=True).long()
-        sids = torch.randint(low=0, high=len(bank), size=(image.size(0),), dtype=torch.long, device=device)
-        prompt = bank.get_batch(indices, sids, device)
+        snapshot_indices = torch.randint(
+            low=0,
+            high=bank.num_snapshots,
+            size=(image.size(0),),
+            dtype=torch.long,
+            device=device,
+        )
+        prompt = bank.load_probabilities(indices, snapshot_indices, device)
 
         valid_prompt = prompt.flatten(1).sum(dim=1) > 0
         metric_logger.update(valid_prompts=int(valid_prompt.sum().item()))
@@ -82,11 +88,14 @@ def main():
 
     train_base = make_dataset(args, "train")
     test_ds = make_dataset(args, "test")
-    bank = PromptBank(args.prompt_bank_dir, split="LCR")
-    if len(train_base) != bank.N:
-        raise RuntimeError(f"PromptBank N={bank.N} does not match train dataset length={len(train_base)}.")
-    if not bank.has_valid_prompts():
-        raise RuntimeError("No valid refiner prompt records found. Check prompt bank IoU thresholds.")
+    bank = LCRProbabilityBank(args.offline_bank_dir, map_size=args.img_size // 4)
+    if len(train_base) != bank.sample_count:
+        raise RuntimeError(
+            f"LCR bank contains {bank.sample_count} samples, but the training set "
+            f"contains {len(train_base)}"
+        )
+    if not bank.has_valid_probabilities():
+        raise RuntimeError("The LCR bank contains no valid probability maps")
 
     train_loader = DataLoader(
         train_base,

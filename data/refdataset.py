@@ -172,10 +172,10 @@ class ReferDataset(data.Dataset):
         
         return result
 
-    def get_coarse_context_item(self, index):
-        """Load only the image and language used by frozen coarse inference."""
+    def get_dlg_input(self, index):
+        """Load the image and language needed to extract DLG features."""
         if self.image_transforms is None:
-            raise RuntimeError("Coarse-context preprocessing requires image transforms")
+            raise RuntimeError("DLG feature extraction requires image transforms")
 
         item = self.processed_data[index]
         img_path = os.path.join(self.image_root, item['file_name'])
