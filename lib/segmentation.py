@@ -28,32 +28,22 @@ def _window_size(pretrained, args):
     return 7
 
 
-def _localization_guidance_config(cfg):
-    joint_cfg = getattr(cfg, 'joint_tune', None)
-    if joint_cfg is not None:
-        return joint_cfg if getattr(joint_cfg, 'enabled', False) else None
-    return cfg if getattr(cfg, 'use_localization_guidance', False) else None
-
 def _attach_localization_guidance(backbone, cfg=None):
-    locate_cfg = _localization_guidance_config(cfg)
-    if locate_cfg is None:
+    if not getattr(cfg, 'use_localization_guidance', False):
         return
-    if getattr(locate_cfg, 'locate_ckpt', ''):
-        guidance, payload = load_localization_guidance(
-            ckpt_path=locate_cfg.locate_ckpt,
-            alpha=locate_cfg.alpha,
+    if cfg.locate_ckpt:
+        guidance = load_localization_guidance(
+            ckpt_path=cfg.locate_ckpt,
+            alpha=cfg.alpha,
+            lambda_geo=cfg.lambda_geo,
             map_location='cpu',
         )
-        source = locate_cfg.locate_ckpt
+        source = cfg.locate_ckpt
     else:
-        guidance, payload = build_localization_guidance(alpha=locate_cfg.alpha)
+        guidance = build_localization_guidance(alpha=cfg.alpha, lambda_geo=cfg.lambda_geo)
         source = 'random initialization'
     backbone.set_localization_guidance(guidance)
-    print(
-        f"Attached LocalizationGuidanceModule from {source} "
-        f"(feature_key={payload.get('feature_key', '')}, "
-        f"alpha={locate_cfg.alpha:.3f})"
-    )
+    print(f"Attached LocalizationGuidanceModule from {source}")
 
 def _build_dicor_components(pretrained, pretrained_refineHead, args, cfg=None, with_refiner=False):
     embed_dim, depths, num_heads = _swin_hyper_by_type(args.swin_type)

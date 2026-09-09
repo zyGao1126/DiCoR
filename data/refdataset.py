@@ -3,6 +3,7 @@ import sys
 import json
 import torch.utils.data as data
 import torch
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -119,32 +120,54 @@ class ReferDataset(data.Dataset):
     
     def __getitem__(self, index):
         return self.get_item(index)
+
+    @staticmethod
+    def _decode_gt_mask(item):
+        return (mask.decode(item['segmentation']) == 1).astype(np.uint8)
+
+    @staticmethod
+    def _decode_sam_masks(item, height, width):
+        sam_masks = []
+        for instance in item['sam3']:
+            decoded = mask.decode({'size': [height, width], 'counts': instance['counts']})
+            if decoded.ndim == 3:
+                decoded = decoded[..., 0]
+            sam_masks.append(decoded.astype(np.uint8))
+        return sam_masks
+
+    def _resize_mask(self, mask_array, dtype):
+        tensor = torch.as_tensor(np.asarray(mask_array).copy(), dtype=torch.float32)
+        tensor = F.interpolate(
+            tensor[None, None],
+            size=(self.img_size, self.img_size),
+            mode='nearest',
+        )[0, 0]
+        return tensor.to(dtype=dtype)
+
+    def get_localization_item(self, index):
+        """Load language and localization labels without reading the RGB image."""
+        item = self.processed_data[index]
+        target = self._decode_gt_mask(item)
+        sam3_masks = self._decode_sam_masks(item, *target.shape)
+        text_inputs = item['text_inputs']
+        return {
+            'target': self._resize_mask(target, torch.int64),
+            'tensor_embeddings': text_inputs['input_ids'],
+            'attention_mask': text_inputs['attention_mask'],
+            'index': index,
+            'sam3_masks': [self._resize_mask(sam_mask, torch.uint8) for sam_mask in sam3_masks],
+        }
     
     def get_item(self, index):
         item = self.processed_data[index]
         img_path = os.path.join(self.image_root, item['file_name'])
         img = Image.open(img_path).convert("RGB")
         
-        seg_mask_rle = item['segmentation']
-        ref_mask = mask.decode(seg_mask_rle)
-        h, w = ref_mask.shape[:2]
-        
-        annot = np.zeros(ref_mask.shape, dtype=np.uint8)
-        annot[ref_mask == 1] = 1
+        annot = self._decode_gt_mask(item)
+        h, w = annot.shape
+        sam3_masks = self._decode_sam_masks(item, h, w)
         annot = Image.fromarray(annot, mode="P")
-
-        sam3_entries = item.get('sam3', [])
-        sam3_masks = []
-        for inst in sam3_entries:
-            rle = {
-                'size': [h, w],
-                'counts': inst['counts']
-            }
-            m = mask.decode(rle)
-            if m.ndim == 3:
-                m = m[..., 0]
-            sam3_masks.append(m.astype(np.uint8))
-        sam3_masks = [Image.fromarray(m.astype(np.uint8), mode='P') for m in sam3_masks]         
+        sam3_masks = [Image.fromarray(sam_mask, mode='P') for sam_mask in sam3_masks]
         target_dict = {'gold_masks': annot, 'sam3_masks': sam3_masks}
 
         if self.image_transforms is not None:

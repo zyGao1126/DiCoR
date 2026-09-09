@@ -295,6 +295,11 @@ class MultiModalSwinTransformer(nn.Module):
     def set_localization_guidance(self, module):
         self.localization_guidance = module
 
+    def fuse_multiscale(self, features, l_feats, l_mask):
+        if self.visual_fusion == 'lvmsf':
+            return self.VMSF(features, l_feats=l_feats, l_mask=l_mask)
+        return self.VMSF(features), l_feats
+
     def init_weights(self, pretrained=None):
         def _init_weights(m):
             if isinstance(m, nn.Linear):
@@ -313,7 +318,7 @@ class MultiModalSwinTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
-    def forward(self, x, l_feats, l_mask, input_ids=None):
+    def forward(self, x, l_feats, l_mask):
         # image embed
         x = self.patch_embed(x)
         B, _, Wh, Ww = x.shape
@@ -338,34 +343,15 @@ class MultiModalSwinTransformer(nn.Module):
                 out = x_out.view(-1, H, W, x_out.shape[-1]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
 
-        features_pre_vmsf = [o for o in outs]
-        localization_out = None
-        guided_l_feats = l_feats_cur
-        if self.localization_guidance is not None:
-            if input_ids is None:
-                raise ValueError("Localization guidance requires raw input_ids during backbone forward.")
-            outs = list(outs)
-            outs[2], guided_l_feats, localization_out = self.localization_guidance(
-                feature_map=outs[2],
-                input_ids=input_ids,
-                l_mask=l_mask,
-                updated_l_feats=l_feats_cur,
-                guide_text=self.visual_fusion == 'lvmsf',
-            )
-        
-        if self.visual_fusion == 'lvmsf':
-            outs, l_feats_cur = self.VMSF(outs, l_feats=guided_l_feats, l_mask=l_mask)
-        else:
-            outs = self.VMSF(outs)
-            l_feats_cur = guided_l_feats
+        features_pre_vmsf = tuple(outs)
+        l_feats_pre_vmsf = l_feats_cur
+        outs, l_feats_cur = self.fuse_multiscale(outs, l_feats_cur, l_mask)
         result = {
             'features': outs,
             'features_pre_vmsf': features_pre_vmsf,
             'l_feats': l_feats_cur,
+            'l_feats_pre_vmsf': l_feats_pre_vmsf,
         }
-        if localization_out is not None:
-            result['localization_guidance'] = localization_out
-
         return result
 
     def train(self, mode=True):

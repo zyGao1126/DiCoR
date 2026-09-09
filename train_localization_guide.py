@@ -1,310 +1,318 @@
+import math
 import os
 import time
 
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import DataLoader, Dataset
 
 import utils
 from args import localization_parser
 from data.dataloader_util import colllate_fn_custom
 from engine import (
-    batch_to_device,
     build_poly_scheduler,
     evaluate_segmentation,
     load_model_weights,
     make_dataset,
+    make_loader,
     model_cfg,
     resolve_device,
-    save_training_checkpoint,
     set_random_seed,
 )
-from prompt_bank import PromptBank
+from offline_bank import DLGFeatureBank
+from lib import segmentation
+from lib.localization_guidance import build_localization_guidance, build_evidence_supervision, token_valid_mask, compute_localization_loss
+
+def set_requires_grad(module, flag: bool) -> None:
+    for parameter in module.parameters():
+        parameter.requires_grad_(flag)
 
 
-def set_requires_grad(module, flag: bool):
-    for param in module.parameters():
-        param.requires_grad_(flag)
+class LocalizationAnnotations(Dataset):
+    """Language and localization labels for selected training rows."""
+
+    def __init__(self, dataset, indices):
+        self.dataset = dataset
+        self.indices = tuple(indices)
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, index):
+        return self.dataset.get_localization_item(self.indices[index])
 
 
-def build_pretrain_optimizer(adapter, args):
-    evidence_params = [p for p in adapter.module.evidence_head.parameters() if p.requires_grad]
-    winner_params = [p for p in adapter.module.ranker.parameters() if p.requires_grad]
-    print(f"[GuidePretrain] evidence params: {sum(p.numel() for p in evidence_params)}")
-    print(f"[GuidePretrain] winner params:   {sum(p.numel() for p in winner_params)}")
+class DLGBatches:
+    """One shuffled epoch over selected rows in the DLG shards."""
+
+    def __init__(self, data, batch_size: int, seed: int):
+        self.data = data
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+
+    def __len__(self):
+        return sum(
+            math.ceil(rows.numel() / self.batch_size)
+            for rows in self.data.local_rows
+            if rows.numel()
+        )
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self.seed)
+        shard_indices = [
+            index
+            for index, rows in enumerate(self.data.local_rows)
+            if rows.numel()
+        ]
+        shard_order = torch.randperm(len(shard_indices), generator=generator).tolist()
+
+        for order_index in shard_order:
+            shard_index = shard_indices[order_index]
+            shard = self.data.bank.shards[shard_index]
+            feature_map = self.data.bank.load_shard(shard)
+            local_rows = self.data.local_rows[shard_index]
+            prepared = self.data.prepared[shard_index]
+            positions = torch.randperm(local_rows.numel(), generator=generator)
+
+            for start in range(0, positions.numel(), self.batch_size):
+                batch_positions = positions[start:start + self.batch_size]
+                yield {
+                    "feature_map": feature_map.index_select(
+                        0,
+                        local_rows.index_select(0, batch_positions),
+                    ),
+                    **{
+                        name: value.index_select(0, batch_positions)
+                        for name, value in prepared.items()
+                    },
+                }
+
+
+class PreparedDLGData:
+    def __init__(self, bank, dataset_indices, prepared):
+        self.bank = bank
+        self.local_rows = []
+        self.prepared = []
+
+        for shard_index in range(len(bank.shards)):
+            row_start = shard_index * bank.shard_size
+            row_stop = min(row_start + bank.shard_size, bank.sample_count)
+            start = int(torch.searchsorted(dataset_indices, row_start).item())
+            stop = int(torch.searchsorted(dataset_indices, row_stop).item())
+            self.local_rows.append(dataset_indices[start:stop] - row_start)
+            self.prepared.append({
+                name: value[start:stop]
+                for name, value in prepared.items()
+            })
+
+        self.local_rows = tuple(self.local_rows)
+        self.prepared = tuple(self.prepared)
+        self.samples = int(dataset_indices.numel())
+
+    def batches(self, batch_size: int, seed: int):
+        return DLGBatches(self, batch_size, seed)
+
+def validate_bank(bank, dataset):
+    if bank.sample_count != len(dataset):
+        raise ValueError(f"DLG features ({bank.sample_count}) do not match the training set " f"({len(dataset)})")
+
+@torch.no_grad()
+def prepare_training_data(dataset, bank, adapter, text_encoder, args, device):
+    selected_indices = [
+        index
+        for index, item in enumerate(dataset.processed_data)
+        if 0.0 < item["area_ratio"] < adapter.area_threshold
+    ]
+    if not selected_indices:
+        raise ValueError("The training set contains no valid samples with area_ratio < 2%")
+
+    annotations = LocalizationAnnotations(dataset, selected_indices)
+    loader = DataLoader(
+        annotations,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=args.pin_mem,
+        collate_fn=colllate_fn_custom,
+    )
+    parts = {
+        "dataset_index": [],
+        "text_tokens": [],
+        "token_valid": [],
+        "pos": [],
+        "far_bg": [],
+        "sam_weak_neg": [],
+        "center": [],
+    }
+    out_h, out_w = bank.feature_shape[-2:]
+    text_encoder.eval()
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    for data in metric_logger.log_every(loader, 100, "Prepare DLG training data"):
+        input_ids = data["tensor_embeddings"].to(device, non_blocking=True).squeeze(1)
+        attention_mask = data["attention_mask"].to(device, non_blocking=True)
+        text_tokens = text_encoder(input_ids, attention_mask=attention_mask.squeeze(-1))[0]
+        supervision = build_evidence_supervision(
+            target=data["target"].to(device, non_blocking=True),
+            sam3_masks=data["sam3_masks"],
+            out_h=out_h,
+            out_w=out_w,
+        )
+
+        parts["dataset_index"].append(data["index"].long())
+        parts["text_tokens"].append(text_tokens.to(dtype=torch.float16).cpu())
+        parts["token_valid"].append(
+            token_valid_mask(input_ids, attention_mask.permute(0, 2, 1)).cpu()
+        )
+        for name in ("pos", "far_bg", "sam_weak_neg"):
+            parts[name].append(supervision[name].bool().cpu())
+        parts["center"].append(supervision["center"].float().cpu())
+
+    prepared = {
+        name: torch.cat(values, dim=0)
+        for name, values in parts.items()
+    }
+    dataset_indices = prepared.pop("dataset_index")
+    print(
+        f"[DLG] selected {dataset_indices.numel()}/{len(dataset)} training samples "
+        f"with 0 < area_ratio < {adapter.area_threshold:.2%}"
+    )
+    return PreparedDLGData(bank, dataset_indices, prepared)
+
+
+def build_optimizer(adapter, args):
+    evidence_params = list(adapter.module.evidence_head.parameters())
+    ranker_params = list(adapter.module.ranker.parameters())
+    print(
+        f"[DLG] evidence parameters: "
+        f"{sum(parameter.numel() for parameter in evidence_params)}"
+    )
+    print(
+        f"[DLG] ranker parameters:   "
+        f"{sum(parameter.numel() for parameter in ranker_params)}"
+    )
     return torch.optim.AdamW(
         [
             {
-                "name": "evidence",
                 "params": evidence_params,
                 "lr": args.evidence_lr,
                 "weight_decay": args.evidence_weight_decay,
             },
             {
-                "name": "winner",
-                "params": winner_params,
+                "params": ranker_params,
                 "lr": args.winner_lr,
                 "weight_decay": args.winner_weight_decay,
             },
         ]
     )
 
+def move_training_batch(data, device):
+    return {
+        "feature_map": data["feature_map"].to(device=device, dtype=torch.float32, non_blocking=True),
+        "text_tokens": data["text_tokens"].to(device=device, dtype=torch.float32, non_blocking=True),
+        "token_valid": data["token_valid"].to(device=device, non_blocking=True),
+        "supervision": {
+            name: data[name].to(device=device, non_blocking=True)
+            for name in ("pos", "far_bg", "sam_weak_neg", "center")
+        },
+    }
 
-def configure_joint_trainable(model):
-    set_requires_grad(model, False)
-    set_requires_grad(model.backbone.localization_guidance.text_norm, True)
-    set_requires_grad(model.backbone.VMSF, True)
-    set_requires_grad(model.classifier, True)
-
-
-def build_joint_optimizer(model, args):
-    token_params = [p for p in model.backbone.localization_guidance.text_norm.parameters() if p.requires_grad]
-    fusion_params = [p for p in model.backbone.VMSF.parameters() if p.requires_grad]
-    decoder_params = [p for p in model.classifier.parameters() if p.requires_grad]
-
-    print(f"[JointTune] token reweight params: {sum(p.numel() for p in token_params)}")
-    print(f"[JointTune] multiscale params:    {sum(p.numel() for p in fusion_params)}")
-    print(f"[JointTune] decoder params:       {sum(p.numel() for p in decoder_params)}")
-    return torch.optim.AdamW(
-        [
-            {"name": "token_reweight", "params": token_params, "lr": args.guide_lr, "weight_decay": 1e-4},
-            {"name": "multiscale_fusion", "params": fusion_params, "lr": args.backbone_lr, "weight_decay": args.weight_decay},
-            {"name": "decoder", "params": decoder_params, "lr": args.backbone_lr, "weight_decay": args.weight_decay},
-        ]
-    )
-
-
-def set_joint_train_mode(model):
-    model.eval()
-    model.backbone.localization_guidance.eval()
-    model.backbone.localization_guidance.text_norm.train()
-    model.backbone.VMSF.train()
-    model.classifier.train()
-
-
-def train_guide_pretrain_epoch(feature_model, adapter, bank, optimizer, scheduler, loader, device, epoch, print_freq):
-    from lib.localization_guidance import compute_localization_loss
-
-    feature_model.eval()
-    adapter.module.train()
+def train_one_epoch(adapter, optimizer, scheduler, batches, device, epoch, print_freq):
+    adapter.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value:.6f}"))
-    metric_logger.add_meter("loc_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
+    metric_logger.add_meter("dlg_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
     metric_logger.add_meter("evidence_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
     metric_logger.add_meter("winner_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
-    metric_logger.add_meter("valid_prompts", utils.SmoothedValue(window_size=20, fmt="{value:.0f}"))
 
-    for data in metric_logger.log_every(loader, print_freq, f"Guide Pretrain Epoch: [{epoch}]"):
-        batch = batch_to_device(data, device)
-        indices = data["index"].to(device, non_blocking=True).long()
-        sids = torch.randint(low=0, high=len(bank), size=(batch["image"].size(0),), dtype=torch.long, device=device)
-        prompt = bank.get_batch(indices, sids, device)
-
-        valid_prompt = prompt.flatten(1).sum(dim=1) > 0
-        metric_logger.update(valid_prompts=int(valid_prompt.sum().item()))
-        if not valid_prompt.any():
-            continue
-
-        keep = valid_prompt.detach().cpu().tolist()
-        batch = {
-            "image": batch["image"][valid_prompt],
-            "target": batch["target"][valid_prompt],
-            "text": batch["text"][valid_prompt],
-            "l_mask": batch["l_mask"][valid_prompt],
-        }
-        prompt = prompt[valid_prompt]
-        sam3_masks = [masks for masks, is_valid in zip(data["sam3_masks"], keep) if is_valid]
-
-        with torch.no_grad():
-            feat_out = feature_model(batch["image"], batch["text"], l_mask=batch["l_mask"])
-            feature_map = feat_out["x_pre_c3_star"].detach()
-            text_tokens = feat_out["l_star"].detach()
-
+    for data in metric_logger.log_every(batches, print_freq, f"DLG Epoch: [{epoch}]"):
+        batch = move_training_batch(data, device)
         guidance = adapter.module(
-            feature_map=feature_map,
-            text_tokens=text_tokens,
-            input_ids=batch["text"],
-            l_mask=batch["l_mask"],
+            feature_map=batch["feature_map"],
+            text_tokens=batch["text_tokens"],
+            token_valid=batch["token_valid"],
             generator=adapter.generator,
-            candidate_prob=prompt,
         )
-        loss, loss_dict = compute_localization_loss(guidance, batch["target"], sam3_masks)
+        loss, loss_dict = compute_localization_loss(guidance, batch["supervision"])
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         scheduler.step()
 
-        metric_logger.update(
-            loc_loss=loss_dict["loc_loss"],
-            evidence_loss=loss_dict["evidence_loss"],
-            winner_loss=loss_dict["winner_loss"],
-            lr=optimizer.param_groups[0]["lr"],
-        )
+        metric_logger.update(**loss_dict)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
 
-def evaluate_pretrain_injection(eval_model, adapter, test_loader, device, epoch):
-    eval_model.backbone.localization_guidance.load_state_dict(adapter.state_dict(), strict=True)
-    set_requires_grad(eval_model, False)
-    eval_model.eval()
-    return evaluate_segmentation(
-        eval_model,
-        test_loader,
-        device,
-        header=f"Guide Inject Test Epoch [{epoch}]:",
-    )
-
-
-def train_joint_epoch(model, seg_criterion, optimizer, scheduler, loader, device, epoch, print_freq):
-    set_joint_train_mode(model)
-
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter("token_lr", utils.SmoothedValue(window_size=1, fmt="{value:.6f}"))
-    metric_logger.add_meter("main_lr", utils.SmoothedValue(window_size=1, fmt="{value:.6f}"))
-    metric_logger.add_meter("seg_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
-
-    for data in metric_logger.log_every(loader, print_freq, f"Joint Tune Epoch: [{epoch}]"):
-        batch = batch_to_device(data, device)
-        out = model(batch["image"], batch["text"], l_mask=batch["l_mask"])
-        loss_dict = seg_criterion(pred=out["x"], targ=batch["target"])
-        loss = loss_dict["total_loss"]
-
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-        metric_logger.update(
-            seg_loss=loss,
-            token_lr=optimizer.param_groups[0]["lr"],
-            main_lr=optimizer.param_groups[1]["lr"],
-        )
-
-def save_guide(path: str, model) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(model.backbone.localization_guidance.state_dict(), path)
-
-
-def save_adapter(path: str, adapter) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def save_guide(path: str, adapter) -> None:
     torch.save(adapter.state_dict(), path)
 
 
 def main():
     args = localization_parser().parse_args()
+    if args.workers > 0:
+        # Avoid file-descriptor transfer failures for SAM3 tensors.
+        torch.multiprocessing.set_sharing_strategy("file_system")
     set_random_seed(args.seed)
     device = resolve_device(args.device)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    from lib import segmentation
-    from lib.localization_guidance import build_localization_guidance
-    from loss.loss import CoarseLoss
-
-    train_base = make_dataset(args, "train")
-    test_ds = make_dataset(args, "test")
-    bank = PromptBank(args.prompt_bank_dir, split="localization")
-    if len(train_base) != bank.N:
-        raise RuntimeError(f"PromptBank N={bank.N} does not match train dataset length={len(train_base)}.")
-    if not bank.has_valid_prompts():
-        raise RuntimeError("No valid localization records found. Check prompt bank IoU and area thresholds.")
-
-    train_loader = DataLoader(
-        train_base,
-        batch_size=args.batch_size,
-        sampler=RandomSampler(train_base),
-        num_workers=args.workers,
-        pin_memory=args.pin_mem,
-        drop_last=len(train_base) >= args.batch_size,
-        collate_fn=colllate_fn_custom,
-    )
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=args.batch_size,
-        sampler=SequentialSampler(test_ds),
-        num_workers=args.workers,
-        pin_memory=args.pin_mem,
-        collate_fn=colllate_fn_custom,
-    )
-
-    feature_model = segmentation.dicor_coarse(
-        pretrained=args.pretrained_swin_weights,
-        pretrained_refineHead="",
-        args=args,
-        cfg=model_cfg(visual_fusion=args.visual_fusion),
-    ).to(device)
-    load_model_weights(feature_model, args.coarse_ckpt, label="Guide pretrain coarse")
-    set_requires_grad(feature_model, False)
-    feature_model.eval()
-
-    adapter, _ = build_localization_guidance(alpha=args.alpha)
-    adapter = adapter.to(device)
-
-    start = time.time()
-    if args.guide_pretrain_epochs > 0:
-        print(f"[GuidePretrain] epochs={args.guide_pretrain_epochs}, samples={len(train_base)}")
-        pretrain_optimizer = build_pretrain_optimizer(adapter, args)
-        pretrain_scheduler = build_poly_scheduler(pretrain_optimizer, len(train_loader), args.guide_pretrain_epochs)
-        eval_model = segmentation.dicor_coarse(
-            pretrained=args.pretrained_swin_weights,
-            pretrained_refineHead="",
-            args=args,
-            cfg=model_cfg(visual_fusion=args.visual_fusion, use_localization=True, alpha=args.alpha),
-        ).to(device)
-        load_model_weights(eval_model, args.coarse_ckpt, label="Guide inject eval coarse")
-        set_requires_grad(eval_model, False)
-        best_pretrain_giou = -1.0
-        for epoch in range(args.guide_pretrain_epochs):
-            train_guide_pretrain_epoch(
-                feature_model=feature_model,
-                adapter=adapter,
-                bank=bank,
-                optimizer=pretrain_optimizer,
-                scheduler=pretrain_scheduler,
-                loader=train_loader,
-                device=device,
-                epoch=epoch,
-                print_freq=args.print_freq,
-            )
-            _, pretrain_giou = evaluate_pretrain_injection(eval_model, adapter, test_loader, device, epoch)
-            if pretrain_giou > best_pretrain_giou:
-                best_pretrain_giou = pretrain_giou
-                save_adapter(os.path.join(args.output_dir, "localization_guidance_pretrained_best.pth"), adapter)
-                print(f"[GuidePretrain] best inject gIoU={best_pretrain_giou:.2f}")
-        del eval_model
-        save_adapter(os.path.join(args.output_dir, "localization_guidance_pretrained.pth"), adapter)
-        print("[GuidePretrain] saved localization_guidance_pretrained.pth")
-
-    del feature_model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    bank = DLGFeatureBank(args.offline_bank_dir)
+    train_dataset = make_dataset(args, "train")
+    val_dataset = make_dataset(args, "val")
+    validate_bank(bank, train_dataset)
 
     model = segmentation.dicor_coarse(
         pretrained=args.pretrained_swin_weights,
         pretrained_refineHead="",
         args=args,
-        cfg=model_cfg(visual_fusion="lvmsf", use_localization=True, alpha=args.alpha),
+        cfg=model_cfg(visual_fusion=args.visual_fusion),
     ).to(device)
-    load_model_weights(model, args.coarse_ckpt, label="Localization coarse")
-    model.backbone.localization_guidance.load_state_dict(adapter.state_dict(), strict=True)
-    configure_joint_trainable(model)
+    incompatible = load_model_weights(model, args.coarse_ckpt, label="DLG coarse model")
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "The coarse checkpoint does not match the current model: "
+            f"missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}"
+        )
+    set_requires_grad(model, False)
+    model.eval()
 
-    seg_criterion = CoarseLoss().to(device)
-    optimizer = build_joint_optimizer(model, args)
-    scheduler = build_poly_scheduler(optimizer, len(train_loader), args.epochs)
+    adapter = build_localization_guidance(alpha=args.alpha, lambda_geo=args.lambda_geo)
+    adapter = adapter.to(device)
+    training_data = prepare_training_data(
+        train_dataset,
+        bank,
+        adapter,
+        model.text_encoder,
+        args,
+        device,
+    )
+    model.backbone.set_localization_guidance(adapter)
 
-    best_giou = -1.0
-    print(f"[JointTune] epochs={args.epochs}, trainable params={sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+    val_loader = make_loader(
+        val_dataset,
+        args.batch_size,
+        args.workers,
+        args.pin_mem,
+        train=False,
+    )
+    optimizer = build_optimizer(adapter, args)
+    steps_per_epoch = len(training_data.batches(args.batch_size, args.seed))
+    scheduler = build_poly_scheduler(optimizer, steps_per_epoch, args.epochs)
+
+    print(f"[DLG] epochs={args.epochs}, samples={training_data.samples}")
+    best_val_miou = -1.0
+    start = time.time()
     for epoch in range(args.epochs):
-        train_joint_epoch(model, seg_criterion, optimizer, scheduler, train_loader, device, epoch, args.print_freq)
-        _, giou = evaluate_segmentation(model, test_loader, device, header=f"Localization Test Epoch [{epoch}]:")
-        if giou > best_giou:
-            best_giou = giou
-            save_training_checkpoint(os.path.join(args.output_dir, "joint_best.pth"), model, optimizer, scheduler, epoch, args)
-            save_guide(os.path.join(args.output_dir, "localization_guidance_best.pth"), model)
-            print(f"[Localization] best gIoU={best_giou:.2f}")
+        batches = training_data.batches(args.batch_size, args.seed + epoch)
+        train_one_epoch(adapter, optimizer, scheduler, batches, device, epoch, args.print_freq)
+        val_miou, _ = evaluate_segmentation(model, val_loader, device, header=f"DLG Val Epoch [{epoch}]:")
+        if val_miou > best_val_miou:
+            best_val_miou = val_miou
+            save_guide(os.path.join(args.output_dir, "localization_guidance_best.pth"), adapter)
+            print(f"[DLG] best val mIoU={best_val_miou:.2f}")
 
-        save_guide(os.path.join(args.output_dir, f"localization_guidance_ep{epoch + 1}.pth"), model)
-
-    print(f"[Localization] finished in {(time.time() - start) / 3600:.2f}h")
+    save_guide(os.path.join(args.output_dir, "localization_guidance_last.pth"), adapter)
+    print(f"[DLG] finished in {(time.time() - start) / 3600:.2f}h")
 
 
 if __name__ == "__main__":

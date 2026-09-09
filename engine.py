@@ -28,12 +28,13 @@ def resolve_device(device_name: str) -> torch.device:
     return device
 
 
-def model_cfg(visual_fusion: str, locate_ckpt: str = "", alpha: float = 0.5, use_localization: bool = False):
+def model_cfg(visual_fusion: str, locate_ckpt: str = "", alpha: float = 0.5, use_localization: bool = False, lambda_geo: float = 0.5):
     return SimpleNamespace(
         coarse=SimpleNamespace(visual_fusion=visual_fusion),
         use_localization_guidance=bool(use_localization or locate_ckpt),
         locate_ckpt=locate_ckpt or "",
         alpha=float(alpha),
+        lambda_geo=float(lambda_geo),
     )
 
 

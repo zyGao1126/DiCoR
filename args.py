@@ -69,23 +69,20 @@ def refiner_parser() -> argparse.ArgumentParser:
 
 
 def localization_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser("Jointly train the localization guide with the coarse branch")
+    parser = argparse.ArgumentParser("Train DLG from offline coarse contexts")
     add_common_args(parser)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--coarse-ckpt", required=True)
-    parser.add_argument("--prompt-bank-dir", required=True)
+    parser.add_argument("--offline-bank-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--batch-size", "-b", type=int, default=16)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--guide-pretrain-epochs", type=int, default=40)
-    parser.add_argument("--backbone-lr", type=float, default=1e-6)
-    parser.add_argument("--guide-lr", type=float, default=1e-4)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--evidence-lr", type=float, default=8e-4)
     parser.add_argument("--evidence-weight-decay", type=float, default=1e-4)
     parser.add_argument("--winner-lr", type=float, default=5e-4)
     parser.add_argument("--winner-weight-decay", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", "--wd", type=float, default=1e-2)
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--lambda-geo", "--lambda_geo", type=float, default=0.5)
     return parser
 
 
@@ -98,4 +95,5 @@ def test_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", default="test")
     parser.add_argument("--batch-size", "-b", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--lambda-geo", "--lambda_geo", type=float, default=0.5)
     return parser

@@ -20,14 +20,12 @@ class _DiCoRBase(nn.Module):
 
     def _run_backbone(self,
                       x: torch.Tensor,
-                      text: torch.Tensor,
                       l_feats: torch.Tensor,
                       l_mask: torch.Tensor):
         out_backbone = self.backbone(
             x,
             l_feats,
             l_mask.permute(0, 2, 1),
-            input_ids=text,
         )
         x_c1, x_c2, x_c3, x_c4 = out_backbone['features']
         return out_backbone, x_c1, x_c2, x_c3, x_c4
@@ -37,6 +35,61 @@ class _DiCoRBase(nn.Module):
         coarse_logits_480 = F.interpolate(coarse_logits_120, size=input_shape, mode='bilinear', align_corners=True)
         return coarse_logits_120, coarse_logits_480
 
+    def _apply_localization_guidance(
+        self,
+        out_backbone,
+        text,
+        l_mask,
+        coarse_logits_120,
+        coarse_logits_480,
+        input_shape,
+    ):
+        guide = self.backbone.localization_guidance
+        if guide is None:
+            return coarse_logits_120, coarse_logits_480, None
+
+        area_ratio = (
+            coarse_logits_480.argmax(dim=1)
+            .eq(1)
+            .float()
+            .flatten(1)
+            .mean(dim=1)
+        )
+        active = area_ratio < guide.area_threshold
+        details = {
+            'coarse_pred_area_ratio': area_ratio,
+            'localization_active': active,
+        }
+        if not bool(active.any()):
+            return coarse_logits_120, coarse_logits_480, details
+
+        active_indices = active.nonzero(as_tuple=False).flatten()
+        features = [
+            feature.index_select(0, active_indices)
+            for feature in out_backbone['features_pre_vmsf']
+        ]
+        language = out_backbone['l_feats_pre_vmsf'].index_select(0, active_indices)
+        language_mask = l_mask.permute(0, 2, 1).index_select(0, active_indices)
+        features[2], guidance = guide(
+            feature_map=features[2],
+            input_ids=text.index_select(0, active_indices),
+            l_mask=language_mask,
+            updated_l_feats=language,
+        )
+        features, _ = self.backbone.fuse_multiscale(features, language, language_mask)
+        action_logits_120 = self.classifier(features[3], features[2], features[1], features[0])
+        action_logits_480 = F.interpolate(
+            action_logits_120,
+            size=input_shape,
+            mode='bilinear',
+            align_corners=True,
+        )
+
+        coarse_logits_120 = coarse_logits_120.index_copy(0, active_indices, action_logits_120)
+        coarse_logits_480 = coarse_logits_480.index_copy(0, active_indices, action_logits_480)
+        details['guidance'] = guidance
+        return coarse_logits_120, coarse_logits_480, details
+
 
 class DiCoRCoarse(_DiCoRBase):
     def forward(self,
@@ -45,11 +98,17 @@ class DiCoRCoarse(_DiCoRBase):
                 l_mask: torch.Tensor):
         input_shape = x.shape[-2:]
         l_feats = self._encode_text(text, l_mask)
-        out_backbone, x_c1, x_c2, x_c3, x_c4 = self._run_backbone(
-            x, text, l_feats, l_mask
-        )
+        out_backbone, x_c1, x_c2, x_c3, x_c4 = self._run_backbone(x, l_feats, l_mask)
         pre_feats = out_backbone.get('features_pre_vmsf', [None, None, None, None])
         coarse_logits_120, coarse_logits_480 = self._coarse_logits(x_c1, x_c2, x_c3, x_c4, input_shape)
+        coarse_logits_120, coarse_logits_480, localization = self._apply_localization_guidance(
+            out_backbone,
+            text,
+            l_mask,
+            coarse_logits_120,
+            coarse_logits_480,
+            input_shape,
+        )
         l_star = out_backbone.get('l_feats', l_feats).permute(0, 2, 1).contiguous()
         result = {
             'x': coarse_logits_480,
@@ -65,9 +124,10 @@ class DiCoRCoarse(_DiCoRBase):
             'x_pre_c3_star': pre_feats[2],
             'x_pre_c4_star': pre_feats[3],
         }
-        localization_out = out_backbone.get('localization_guidance')
-        if localization_out is not None:
-            result.update(localization_out)
+        if localization is not None:
+            result.update({key: value for key, value in localization.items() if key != 'guidance'})
+            if 'guidance' in localization:
+                result['localization_guidance'] = localization['guidance']
         return result
 
 
@@ -116,11 +176,17 @@ class DiCoRRefinerTest(_DiCoRBase):
                 l_mask: torch.Tensor):
         input_shape = x.shape[-2:]
         l_feats = self._encode_text(text, l_mask)
-        out_backbone, x_c1, x_c2, x_c3, x_c4 = self._run_backbone(
-            x, text, l_feats, l_mask
-        )
+        out_backbone, x_c1, x_c2, x_c3, x_c4 = self._run_backbone(x, l_feats, l_mask)
         pre_feats = out_backbone.get('features_pre_vmsf', [None, None, None, None])
         coarse_logits_120, coarse_logits_480 = self._coarse_logits(x_c1, x_c2, x_c3, x_c4, input_shape)
+        coarse_logits_120, coarse_logits_480, localization = self._apply_localization_guidance(
+            out_backbone,
+            text,
+            l_mask,
+            coarse_logits_120,
+            coarse_logits_480,
+            input_shape,
+        )
 
         prompt = torch.softmax(coarse_logits_480, dim=1)[:, 1:2].detach()
         refine_in = torch.cat([x, prompt], dim=1)
@@ -144,7 +210,8 @@ class DiCoRRefinerTest(_DiCoRBase):
             'x_pre_c4_star': pre_feats[3],
             'router_reg': out_backbone.get('router_reg', None),
         }
-        localization_out = out_backbone.get('localization_guidance')
-        if localization_out is not None:
-            result.update(localization_out)
+        if localization is not None:
+            result.update({key: value for key, value in localization.items() if key != 'guidance'})
+            if 'guidance' in localization:
+                result['localization_guidance'] = localization['guidance']
         return result

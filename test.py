@@ -23,6 +23,7 @@ def main():
         visual_fusion=args.visual_fusion,
         locate_ckpt=args.locate_ckpt,
         alpha=args.alpha,
+        lambda_geo=args.lambda_geo,
         use_localization=use_locate,
     )
 

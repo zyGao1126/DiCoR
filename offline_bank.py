@@ -95,8 +95,4 @@ class DLGFeatureBank:
 
     @staticmethod
     def load_shard(shard: Path) -> torch.Tensor:
-        return torch.load(
-            shard,
-            map_location="cpu",
-            weights_only=True,
-        )
+        return torch.load(shard, map_location="cpu", weights_only=True)
