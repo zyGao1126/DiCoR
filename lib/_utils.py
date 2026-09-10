@@ -154,6 +154,9 @@ class DiCoRRefinerTrain(_DiCoRBase):
             prompt = F.interpolate(prompt, size=input_shape, mode="bilinear", align_corners=False)
         prompt = prompt.detach()
 
+        if self.training:
+            prompt = self.PROMPT_PROCESSOR.augment_prompt(prompt)
+
         coarse_logits_480 = self.PROMPT_PROCESSOR.logits_from_prob_fg(prompt)
         focus_map = self.PROMPT_PROCESSOR.build_focus_map(prompt)
 

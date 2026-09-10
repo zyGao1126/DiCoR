@@ -1,15 +1,16 @@
 import torch
 
 from args import test_parser
-from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device
+from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device, strip_module_prefix
 
 def load_refiner_weights(model, ckpt_path: str):
     state = torch.load(ckpt_path, map_location="cpu")
     if isinstance(state, dict) and "model" in state:
         state = state["model"]
+    state = strip_module_prefix(state)
     if any(key.startswith("refineHead.") for key in state.keys()):
         state = {key.replace("refineHead.", "", 1): value for key, value in state.items() if key.startswith("refineHead.")}
-    msg = model.refineHead.load_state_dict(state, strict=False)
+    msg = model.refineHead.load_state_dict(state, strict=True)
     print(f"[Test] loaded refiner {ckpt_path}: {msg}")
 
 

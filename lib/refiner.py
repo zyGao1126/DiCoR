@@ -93,15 +93,10 @@ class RefineUNet(nn.Module):
 
 
 class RefinerPromptProcessor:
-    FOCUS_AREA_SMALL = 0.002
-    FOCUS_AREA_LARGE = 0.02
-    FOCUS_R_SMALL = 6
-    FOCUS_R_MED = 12
-    FOCUS_R_LARGE = 18
-    FOCUS_R_BAND = 3
-    FOCUS_W_FOCUS = 0.7
-    FOCUS_W_BAND = 0.2
-    FOCUS_W_UNC = 0.1
+    aug_prob = 0.6
+    aug_morph_prob = 0.6
+    morph_max_radius = 4
+    area_thresholds = (0.002, 0.02)
 
     @staticmethod
     def _dilate01(x01: torch.Tensor, r: int):
@@ -116,16 +111,46 @@ class RefinerPromptProcessor:
             return x01
         return 1.0 - RefinerPromptProcessor._dilate01(1.0 - x01, r)
 
+    def augment_prompt(self, prompt: torch.Tensor) -> torch.Tensor:
+        """Apply the best ablation's area-adaptive morphology policy."""
+        if torch.rand(1).item() > self.aug_prob:
+            return prompt
+
+        area_ratios = prompt.mean(dim=(2, 3)).squeeze(1)
+        augmented = []
+        for index in range(prompt.shape[0]):
+            sample = prompt[index:index + 1]
+            if torch.rand(1).item() < self.aug_morph_prob:
+                area = area_ratios[index].item()
+                if area < self.area_thresholds[0]:
+                    max_radius = max(1, self.morph_max_radius // 2)
+                elif area > self.area_thresholds[1]:
+                    max_radius = int(self.morph_max_radius * 1.5)
+                else:
+                    max_radius = self.morph_max_radius
+
+                radius = torch.randint(-max_radius, max_radius + 1, (1,)).item()
+                if radius > 0:
+                    sample = self._dilate01(sample, radius)
+                elif radius < 0:
+                    sample = self._erode01(sample, -radius)
+            augmented.append(sample)
+        return torch.cat(augmented, dim=0)
+
     def build_focus_map(self, prompt_prob: torch.Tensor) -> torch.Tensor:
+        dilation_radii = (6, 12, 18)
+        focus_weights = (0.7, 0.2, 0.1)
+        band_radius = 3
+
         pred_fg = (prompt_prob > 0.5).float()
         area = pred_fg.mean(dim=(2, 3), keepdim=True)
         r = torch.where(
-            area < self.FOCUS_AREA_SMALL,
-            torch.full_like(area, float(self.FOCUS_R_SMALL)),
+            area < self.area_thresholds[0],
+            torch.full_like(area, float(dilation_radii[0])),
             torch.where(
-                area > self.FOCUS_AREA_LARGE,
-                torch.full_like(area, float(self.FOCUS_R_LARGE)),
-                torch.full_like(area, float(self.FOCUS_R_MED)),
+                area > self.area_thresholds[1],
+                torch.full_like(area, float(dilation_radii[2])),
+                torch.full_like(area, float(dilation_radii[1])),
             ),
         ).view(-1)
 
@@ -135,15 +160,13 @@ class RefinerPromptProcessor:
         ], dim=0)
 
         edge = (self._dilate01(pred_fg, 1) - self._erode01(pred_fg, 1)).clamp(0, 1)
-        band = self._dilate01(edge, self.FOCUS_R_BAND)
+        band = self._dilate01(edge, band_radius)
         unc = (1.0 - (2.0 * prompt_prob - 1.0).abs()).clamp(0, 1)
 
         focus_map = (
-            self.FOCUS_W_FOCUS * focus +
-            self.FOCUS_W_BAND * band +
-            self.FOCUS_W_UNC * unc
+            focus_weights[0] * focus + focus_weights[1] * band + focus_weights[2] * unc
         ).clamp(0, 1)
-        return focus_map
+        return 0.05 + 0.95 * focus_map
 
     @staticmethod
     def logits_from_prob_fg(prob_fg: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
