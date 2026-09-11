@@ -13,7 +13,6 @@ wandb/
 
 pretrained_weights/
 bert-base-uncased/
-datainfo/
 datasets/
 data_root/
 prompt_bank/
