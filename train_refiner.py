@@ -134,40 +134,29 @@ def main():
     optimizer = torch.optim.AdamW(model.refineHead.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = build_poly_scheduler(optimizer, len(train_loader), args.epochs)
 
-    best_giou = -1.0
     best_miou = -1.0
-    best_giou_epoch = None
     best_miou_epoch = None
 
     start = time.time()
     for epoch in range(args.epochs):
         train_one_epoch(model, criterion, optimizer, scheduler, train_loader, bank, device, epoch, args.print_freq)
         miou, giou = evaluate_refiner(evaluation_model, model.refineHead.state_dict(), val_loader, device)
-        is_best_giou = giou > best_giou
         is_best_miou = miou > best_miou
 
-        if is_best_giou:
-            best_giou = giou
-            best_giou_epoch = epoch + 1
-            torch.save(model.refineHead.state_dict(), os.path.join(args.output_dir, "refiner_best_giou.pth"))
-            torch.save(model.refineHead.state_dict(), os.path.join(args.output_dir, "refiner.pth"))
         if is_best_miou:
             best_miou = miou
             best_miou_epoch = epoch + 1
-            torch.save(model.refineHead.state_dict(), os.path.join(args.output_dir, "refiner_best_miou.pth"))
+            torch.save(model.refineHead.state_dict(), os.path.join(args.output_dir, "refiner_best.pth"))
 
         print(
             f"[Refiner Metrics] epoch={epoch + 1} "
             f"val_gIoU={giou:.10f} val_mIoU={miou:.10f} "
-            f"best_gIoU={best_giou:.10f}@{best_giou_epoch} "
             f"best_mIoU={best_miou:.10f}@{best_miou_epoch}"
         )
-        torch.save(model.refineHead.state_dict(), os.path.join(args.output_dir, f"refiner_ep{epoch + 1}.pth"))
 
     elapsed_seconds = time.time() - start
     print(
         f"[Refiner] finished in {elapsed_seconds / 3600:.2f}h; "
-        f"best_gIoU={best_giou:.10f}@{best_giou_epoch}; "
         f"best_mIoU={best_miou:.10f}@{best_miou_epoch}"
     )
 

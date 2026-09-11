@@ -1,7 +1,7 @@
 import torch
-
 from args import test_parser
 from engine import evaluate_segmentation, load_model_weights, make_dataset, make_loader, model_cfg, resolve_device, strip_module_prefix
+from lib import segmentation
 
 def load_refiner_weights(model, ckpt_path: str):
     state = torch.load(ckpt_path, map_location="cpu")
@@ -27,8 +27,6 @@ def main():
         lambda_geo=args.lambda_geo,
         use_localization=use_locate,
     )
-
-    from lib import segmentation
 
     if use_refiner:
         model = segmentation.dicor_refiner_test(

@@ -48,13 +48,7 @@ class _DiCoRBase(nn.Module):
         if guide is None:
             return coarse_logits_120, coarse_logits_480, None
 
-        area_ratio = (
-            coarse_logits_480.argmax(dim=1)
-            .eq(1)
-            .float()
-            .flatten(1)
-            .mean(dim=1)
-        )
+        area_ratio = (coarse_logits_480.argmax(dim=1) == 1).float().mean(dim=(1, 2))
         active = area_ratio < guide.area_threshold
         details = {
             'coarse_pred_area_ratio': area_ratio,
