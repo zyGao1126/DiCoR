@@ -237,23 +237,10 @@ def build_lcr_bank(args, device: torch.device) -> None:
 
 
 @torch.no_grad()
-def write_dlg_features(model, args, device: torch.device) -> None:
-    dataset = make_dataset(args, "train")
-    input_dataset = DLGInputDataset(dataset)
-    loader = DataLoader(
-        input_dataset,
-        batch_size=args.batch_size,
-        sampler=SequentialSampler(input_dataset),
-        num_workers=args.workers,
-        pin_memory=args.pin_mem,
-        drop_last=False,
-        collate_fn=colllate_fn_custom,
-    )
-    output_dir = Path(args.output_dir).resolve() / "DLG"
-    writer = DLGFeatureWriter(output_dir, 256)
+def write_dlg_features(model, loader, writer, device: torch.device, label: str) -> int:
     cached_rows = 0
 
-    for data in tqdm(loader, desc="[OfflineBank] DLG", dynamic_ncols=True):
+    for data in tqdm(loader, desc=f"[OfflineBank] DLG {label}", dynamic_ncols=True):
         indices = data["index"].long().cpu()
         expected = torch.arange(cached_rows, cached_rows + indices.numel(), dtype=indices.dtype)
         if not torch.equal(indices, expected):
@@ -271,13 +258,32 @@ def write_dlg_features(model, args, device: torch.device) -> None:
         writer.add(features)
         cached_rows += int(features.shape[0])
 
-    writer.finish()
-    print(f"[OfflineBank] DLG: cached {cached_rows} samples")
+    print(f"[OfflineBank] DLG {label}: cached {cached_rows} samples")
+    return cached_rows
 
 
 def build_dlg_bank(args, device: torch.device) -> None:
     if not os.path.isfile(args.coarse_ckpt):
         raise FileNotFoundError(f"Missing coarse checkpoint: {args.coarse_ckpt}")
+
+    checkpoints = (
+        ("best", args.coarse_ckpt),
+        ("ep30", snapshot_path(args.coarse_dir, 30)),
+    )
+
+    dataset = make_dataset(args, "train")
+    input_dataset = DLGInputDataset(dataset)
+    loader = DataLoader(
+        input_dataset,
+        batch_size=args.batch_size,
+        sampler=SequentialSampler(input_dataset),
+        num_workers=args.workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+        collate_fn=colllate_fn_custom,
+    )
+    output_dir = Path(args.output_dir).resolve() / "DLG"
+    writer = DLGFeatureWriter(output_dir, 256)
 
     model = segmentation.dicor_coarse(
         pretrained=args.pretrained_swin_weights,
@@ -285,11 +291,34 @@ def build_dlg_bank(args, device: torch.device) -> None:
         args=args,
         cfg=model_cfg(visual_fusion=args.visual_fusion),
     ).to(device)
-    load_exact_weights(model, args.coarse_ckpt, label="DLG coarse model")
     model.eval()
     model.requires_grad_(False)
 
-    write_dlg_features(model, args, device)
+    snapshots = []
+    row_start = 0
+    for name, checkpoint in checkpoints:
+        load_exact_weights(model, checkpoint, label=f"DLG {name}")
+        row_stop = row_start + write_dlg_features(model, loader, writer, device, name)
+        snapshots.append(
+            {
+                "name": name,
+                "row_start": row_start,
+                "row_stop": row_stop,
+                "checkpoint": file_record(checkpoint),
+            }
+        )
+        row_start = row_stop
+
+    writer.finish()
+    manifest = {
+        "kind": "dlg_feature",
+        "sample_count": len(dataset),
+        "total_rows": row_start,
+        "annotation_file": file_record(dataset.ann_path),
+        "model": model_record(args),
+        "snapshots": snapshots,
+    }
+    write_json(output_dir / "manifest.json", manifest)
 
 
 def main() -> None:

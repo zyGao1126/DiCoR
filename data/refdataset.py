@@ -75,6 +75,7 @@ class ReferDataset(data.Dataset):
     def _preprocess_all_data(self):
         tmp_items = []
 
+        # skip some samples that are known to be problematic
         RRSISD_exclude = ['22187.jpg', '20203.jpg', '00413.jpg', '01072.jpg', '01664.jpg', '03661.jpg', '05125.jpg', '06728.jpg',
                           '06861.jpg', '09319.jpg', '10579.jpg', '10653.jpg', '11147.jpg', '11898.jpg',
                           '12492.jpg', '12630.jpg', '14464.jpg', '14915.jpg', '15357.jpg', '15584.jpg',

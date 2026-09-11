@@ -42,78 +42,57 @@ class LocalizationAnnotations(Dataset):
 
 
 class DLGBatches:
-    """One shuffled epoch over selected rows in the DLG shards."""
+    """One epoch with one selected snapshot per training sample."""
 
-    def __init__(self, data, batch_size: int, seed: int):
+    def __init__(self, data, batch_size: int):
         self.data = data
         self.batch_size = int(batch_size)
-        self.seed = int(seed)
 
     def __len__(self):
-        return sum(
-            math.ceil(rows.numel() / self.batch_size)
-            for rows in self.data.local_rows
-            if rows.numel()
-        )
+        return math.ceil(self.data.samples / self.batch_size)
 
     def __iter__(self):
-        generator = torch.Generator().manual_seed(self.seed)
-        shard_indices = [
-            index
-            for index, rows in enumerate(self.data.local_rows)
-            if rows.numel()
+        bank = self.data.bank
+        snapshot_indices = torch.randint(
+            bank.num_snapshots,
+            (self.data.samples,),
+        )
+        offsets = torch.tensor(bank.snapshot_offsets)
+        rows = self.data.dataset_indices + offsets.index_select(0, snapshot_indices)
+        row_shards = torch.div(rows, bank.shard_size, rounding_mode="floor")
+        shard_indices = torch.unique(row_shards)
+        shard_indices = shard_indices[
+            torch.randperm(shard_indices.numel())
         ]
-        shard_order = torch.randperm(len(shard_indices), generator=generator).tolist()
 
-        for order_index in shard_order:
-            shard_index = shard_indices[order_index]
-            shard = self.data.bank.shards[shard_index]
-            feature_map = self.data.bank.load_shard(shard)
-            local_rows = self.data.local_rows[shard_index]
-            prepared = self.data.prepared[shard_index]
-            positions = torch.randperm(local_rows.numel(), generator=generator)
+        pending = {}
+        for shard_index in shard_indices.tolist():
+            positions = (row_shards == shard_index).nonzero(as_tuple=False).flatten()
+            positions = positions[torch.randperm(positions.numel())]
+            local_rows = rows[positions] - shard_index * bank.shard_size
+            selected = {name: value[positions] for name, value in self.data.prepared.items()}
+            selected["feature_map"] = bank.load_shard(bank.shards[shard_index])[local_rows]
 
-            for start in range(0, positions.numel(), self.batch_size):
-                batch_positions = positions[start:start + self.batch_size]
-                yield {
-                    "feature_map": feature_map.index_select(
-                        0,
-                        local_rows.index_select(0, batch_positions),
-                    ),
-                    **{
-                        name: value.index_select(0, batch_positions)
-                        for name, value in prepared.items()
-                    },
-                }
+            for name, value in selected.items():
+                pending[name] = torch.cat((pending[name], value)) if name in pending else value
+            while len(pending["feature_map"]) >= self.batch_size:
+                yield {name: value[:self.batch_size] for name, value in pending.items()}
+                pending = {name: value[self.batch_size:] for name, value in pending.items()}
+
+        if pending:
+            yield pending
 
 
 class PreparedDLGData:
     def __init__(self, bank, dataset_indices, prepared):
         self.bank = bank
-        self.local_rows = []
-        self.prepared = []
-
-        for shard_index in range(len(bank.shards)):
-            row_start = shard_index * bank.shard_size
-            row_stop = min(row_start + bank.shard_size, bank.sample_count)
-            start = int(torch.searchsorted(dataset_indices, row_start).item())
-            stop = int(torch.searchsorted(dataset_indices, row_stop).item())
-            self.local_rows.append(dataset_indices[start:stop] - row_start)
-            self.prepared.append({
-                name: value[start:stop]
-                for name, value in prepared.items()
-            })
-
-        self.local_rows = tuple(self.local_rows)
-        self.prepared = tuple(self.prepared)
+        self.dataset_indices = dataset_indices
+        self.prepared = prepared
         self.samples = int(dataset_indices.numel())
 
-    def batches(self, batch_size: int, seed: int):
-        return DLGBatches(self, batch_size, seed)
+    def batches(self, batch_size: int):
+        return DLGBatches(self, batch_size)
 
-def validate_bank(bank, dataset):
-    if bank.sample_count != len(dataset):
-        raise ValueError(f"DLG features ({bank.sample_count}) do not match the training set " f"({len(dataset)})")
 
 @torch.no_grad()
 def prepare_training_data(dataset, bank, adapter, text_encoder, args, device):
@@ -174,7 +153,8 @@ def prepare_training_data(dataset, bank, adapter, text_encoder, args, device):
     dataset_indices = prepared.pop("dataset_index")
     print(
         f"[DLG] selected {dataset_indices.numel()}/{len(dataset)} training samples "
-        f"with 0 < area_ratio < {adapter.area_threshold:.2%}"
+        f"with 0 < area_ratio < {adapter.area_threshold:.2%}; "
+        f"snapshots={bank.num_snapshots}"
     )
     return PreparedDLGData(bank, dataset_indices, prepared)
 
@@ -256,10 +236,9 @@ def main():
     device = resolve_device(args.device)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    bank = DLGFeatureBank(args.offline_bank_dir)
     train_dataset = make_dataset(args, "train")
+    bank = DLGFeatureBank(args.offline_bank_dir, sample_count=len(train_dataset))
     val_dataset = make_dataset(args, "val")
-    validate_bank(bank, train_dataset)
 
     model = segmentation.dicor_coarse(
         pretrained=args.pretrained_swin_weights,
@@ -296,14 +275,14 @@ def main():
         train=False,
     )
     optimizer = build_optimizer(adapter, args)
-    steps_per_epoch = len(training_data.batches(args.batch_size, args.seed))
+    steps_per_epoch = len(training_data.batches(args.batch_size))
     scheduler = build_poly_scheduler(optimizer, steps_per_epoch, args.epochs)
 
     print(f"[DLG] epochs={args.epochs}, samples={training_data.samples}")
     best_val_miou = -1.0
     start = time.time()
     for epoch in range(args.epochs):
-        batches = training_data.batches(args.batch_size, args.seed + epoch)
+        batches = training_data.batches(args.batch_size)
         train_one_epoch(adapter, optimizer, scheduler, batches, device, epoch, args.print_freq)
         val_miou, _ = evaluate_segmentation(model, val_loader, device, header=f"DLG Val Epoch [{epoch}]:")
         if val_miou > best_val_miou:

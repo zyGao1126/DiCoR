@@ -52,7 +52,7 @@ class LCRProbabilityBank:
 class DLGFeatureBank:
     """Shard-backed coarse visual features used to train DLG."""
 
-    def __init__(self, offline_bank_dir: str):
+    def __init__(self, offline_bank_dir: str, sample_count: int):
         self.root = Path(offline_bank_dir).resolve() / "DLG"
         self.shards = tuple(sorted(self.root.glob("shard_*.pt")))
         if not self.shards:
@@ -66,11 +66,19 @@ class DLGFeatureBank:
         last_shard_rows = self.shard_size
         if len(self.shards) > 1:
             last_shard_rows = int(self.load_shard(self.shards[-1]).shape[0])
-        self.sample_count = self.shard_size * (len(self.shards) - 1) + last_shard_rows
+        self.total_rows = self.shard_size * (len(self.shards) - 1) + last_shard_rows
+        self.sample_count = int(sample_count)
+        if self.total_rows % self.sample_count:
+            raise ValueError(f"DLG contains {self.total_rows} rows for {self.sample_count} training samples")
+        self.num_snapshots = self.total_rows // self.sample_count
+        self.snapshot_offsets = tuple(
+            index * self.sample_count
+            for index in range(self.num_snapshots)
+        )
 
         print(
-            f"[DLG] loaded {self.sample_count} feature maps from {self.root}, "
-            f"shape={self.feature_shape}"
+            f"[DLG] loaded {self.num_snapshots} snapshots and {self.total_rows} feature maps "
+            f"from {self.root}, shape={self.feature_shape}"
         )
 
     @staticmethod
