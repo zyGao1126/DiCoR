@@ -1,103 +1,138 @@
 # DiCoR
 
-Official release code for **DiCoR: Decoupled Referent Disambiguation and Contour Recalibration for Efficient Referring Remote Sensing Image Segmentation**.
+Official implementation of **DiCoR: Decoupled Referent Disambiguation and Contour Recalibration for Efficient Referring Remote Sensing Image Segmentation**.
 
-![DiCoR Overview](Overview.png)
+![DiCoR overview](Overview.png)
 
-## Environment
+## Installation
 
-Create a new conda envirenment and install the main dependencies:
+The code was prepared with Python 3.9, PyTorch 2.4.0, and CUDA 12.1. Create the environment from the repository root:
 
 ```bash
 conda create -n dicor python=3.9 -y
 conda activate dicor
 
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 \
+  --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
 ```
 
-Prepare the initialization files:
+Use the PyTorch build matching your local CUDA installation if it differs from CUDA 12.1.
 
-```bash
-mkdir -p pretrained_weights
-```
+### Initialization weights
 
-Download the Swin Transformer classification weight `swin_base_patch4_window12_384_22k.pth` and place it in `pretrained_weights/`.
-
-Download `bert-base-uncased` from Hugging Face and place it under:
+Prepare the following files:
 
 ```text
-bert-base-uncased/
+DiCoR/
+├── pretrained_weights/
+│   └── swin_base_patch4_window12_384_22k.pth
+└── bert-base-uncased/
+    ├── config.json
+    ├── pytorch_model.bin
+    └── vocab.txt
 ```
 
-## Data
+- Download pre-trained Swin transformer checkpoint from [this link](https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_base_patch4_window12_384_22k.pth).
+- Download the PyTorch files for BERT base uncased from [this link](https://huggingface.co/google-bert/bert-base-uncased) and place them in `bert-base-uncased/` as shown above.
 
-DiCoR supports `risbench`, `rrsisd`, and `refsegrs`.
+## Data preparation
 
-Please download the three datasets following [RSRefSeg2](https://github.com/KyanChen/RSRefSeg2):
+Download the images for the supported datasets from their official repositories. The data split annotations used by this code are already included under `datainfo/`.
 
-- [RefSegRS](https://github.com/zhu-xlab/rrsis)
-- [RRSIS-D](https://github.com/Lsan2401/RMSIN)
-- [RISBench](https://github.com/Franpin/Hit-SIRS)
+| Dataset | Image directory | Source |
+| --- | --- | --- |
+| RefSegRS | images/ | [RefSegRS](https://github.com/zhu-xlab/rrsis) |
+| RRSIS-D | images/rrsisd/JPEGImages/ | [RRSIS-D](https://github.com/Lsan2401/RMSIN) |
+| RISBench | img_rgb/ | [RISBench](https://github.com/Franpin/Hit-SIRS) |
 
-Use the `datainfo` files from RSRefSeg2 and place them in this repository. The examples below use RefSegRS, so set `DATA` to the RefSegRS root and use `DATASET=refsegrs`.
+For example:
+
+```text
+/path/to/RefSegRS/
+└── images/
+    └── 1361.tif
+
+/path/to/RRSIS-D/
+└── images/rrsisd/JPEGImages/
+    └── 02934.jpg
+
+/path/to/RISBench/
+└── img_rgb/
+    └── train_0_0.png
+```
+
+Each annotation is a JSON Lines file. The bundled RRSIS-D and RISBench training annotations also contain the precomputed SAM 3 proposals used to supervise DLG. Since RefSegRS dataset can require multiple valid instances to be segmented jointly, we disable DLG for this dataset and use the coarse segmenter with LCR.
 
 ## Training
 
-Set the dataset root and experiment root:
+The training process first runs train_coarse.sh to optimize the coarse vision-language segmenter. Then, train_dicor.sh builds the offline banks and trains the lightweight modules.
+
+### RefSegRS
 
 ```bash
-export DATA=/path/to/RefSegRS
-export BANK=checkpoints/refsegrs
+export DEVICE=cuda:0
+export DATA_ROOT=/path/to/RefSegRS
+export OUTPUT_ROOT=checkpoints/refsegrs
+
+bash scripts/refsegrs/train_coarse.sh
+bash scripts/refsegrs/train_dicor.sh
 ```
 
-The coarse baseline is saved to `$BANK/coarse/`, and later stages use `$BANK/coarse/coarse_best.pth`. Refiner and localization-guide training also require a prepared offline PromptBank under:
-
-```text
-$BANK/prompt_bank/
-  refiner/
-    ep*.mmap
-  localization/
-    ep*.mmap
-```
-
-Train the coarse baseline:
+### RISBench
 
 ```bash
-bash scripts/train_coarse.sh
+export DEVICE=cuda:0
+export DATA_ROOT=/path/to/RISBench
+export OUTPUT_ROOT=checkpoints/risbench
+
+bash scripts/risbench/train_coarse.sh
+bash scripts/risbench/train_dicor.sh
 ```
 
-Train the contour recalibration refiner:
+### RRSIS-D
 
 ```bash
-bash scripts/train_refiner.sh
+export DEVICE=cuda:0
+export DATA_ROOT=/path/to/RRSIS-D
+export OUTPUT_ROOT=checkpoints/rrsisd
+
+bash scripts/rrsisd/train_coarse.sh
+bash scripts/rrsisd/train_dicor.sh
 ```
 
-Train the localization guide:
+## Evaluation
+
+### RefSegRS
 
 ```bash
-bash scripts/train_localization_guide.sh
+DEVICE=cuda:0 \
+DATA_ROOT=/path/to/RefSegRS \
+OUTPUT_ROOT=checkpoints/refsegrs \
+bash scripts/refsegrs/test.sh
 ```
 
-Use environment variables to override defaults, for example:
+### RISBench
 
 ```bash
-DATA=/path/to/RefSegRS DATASET=refsegrs BANK=checkpoints/refsegrs bash scripts/train_coarse.sh
+DEVICE=cuda:0 \
+DATA_ROOT=/path/to/RISBench \
+OUTPUT_ROOT=checkpoints/risbench \
+bash scripts/risbench/test.sh
 ```
 
-## Testing
-
-Evaluate the coarse baseline:
+### RRSIS-D
 
 ```bash
-bash scripts/test_coarse.sh
+DEVICE=cuda:0 \
+DATA_ROOT=/path/to/RRSIS-D \
+OUTPUT_ROOT=checkpoints/rrsisd \
+bash scripts/rrsisd/test.sh
 ```
 
-Evaluate full DiCoR:
+## License
 
-```bash
-bash scripts/test_dicor.sh
-```
+This project is released under the [GNU General Public License v3.0](LICENSE).
 
 ## Acknowledgements
 
