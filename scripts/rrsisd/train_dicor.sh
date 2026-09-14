@@ -7,12 +7,12 @@ cd "$ROOT_DIR"
 PYTHON=${PYTHON:-python}
 DEVICE=${DEVICE:-cuda:0}
 DATA_ROOT=${DATA_ROOT:-/path/to/RRSIS-D}
-OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/rrsisd}
+OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/RRSIS-D}
 COARSE_DIR=${COARSE_DIR:-$OUTPUT_ROOT/coarse}
 COARSE_CKPT=${COARSE_CKPT:-$COARSE_DIR/coarse_best.pth}
 OFFLINE_BANK_DIR=${OFFLINE_BANK_DIR:-$OUTPUT_ROOT/offline_bank}
-LOCALIZATION_DIR=${LOCALIZATION_DIR:-$OUTPUT_ROOT/localization}
-REFINER_DIR=${REFINER_DIR:-$OUTPUT_ROOT/refiner}
+LOCALIZATION_DIR=${LOCALIZATION_DIR:-$OUTPUT_ROOT/dlg}
+REFINER_DIR=${REFINER_DIR:-$OUTPUT_ROOT/lcr}
 
 COMMON_ARGS=(
   --device "$DEVICE"
@@ -22,7 +22,7 @@ COMMON_ARGS=(
   --swin-type base
   --num-vmsf-blocks 3
   --num-heads-fusion 1
-  --visual-fusion lvmsf
+  --visual-fusion vmsf
 )
 
 "$PYTHON" build_offline_bank.py \

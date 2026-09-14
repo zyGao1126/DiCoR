@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 PYTHON=${PYTHON:-python}
 DEVICE=${DEVICE:-cuda:0}
 DATA_ROOT=${DATA_ROOT:-/path/to/RefSegRS}
-OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/refsegrs}
+OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/RefSegRS}
 COARSE_DIR=${COARSE_DIR:-$OUTPUT_ROOT/coarse}
 
 "$PYTHON" train_baseline.py \

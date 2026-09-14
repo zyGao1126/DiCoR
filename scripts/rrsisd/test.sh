@@ -7,10 +7,10 @@ cd "$ROOT_DIR"
 PYTHON=${PYTHON:-python}
 DEVICE=${DEVICE:-cuda:0}
 DATA_ROOT=${DATA_ROOT:-/path/to/RRSIS-D}
-OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/rrsisd}
+OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/RRSIS-D}
 COARSE_CKPT=${COARSE_CKPT:-$OUTPUT_ROOT/coarse/coarse_best.pth}
-REFINER_CKPT=${REFINER_CKPT:-$OUTPUT_ROOT/refiner/refiner_best.pth}
-LOCATE_CKPT=${LOCATE_CKPT:-$OUTPUT_ROOT/localization/localization_guidance_best.pth}
+REFINER_CKPT=${REFINER_CKPT:-$OUTPUT_ROOT/lcr/refiner_best.pth}
+LOCATE_CKPT=${LOCATE_CKPT:-$OUTPUT_ROOT/dlg/localization_guidance_best.pth}
 SPLIT=${SPLIT:-test}
 
 "$PYTHON" test.py \
@@ -22,7 +22,7 @@ SPLIT=${SPLIT:-test}
   --swin-type base \
   --num-vmsf-blocks 3 \
   --num-heads-fusion 1 \
-  --visual-fusion lvmsf \
+  --visual-fusion vmsf \
   --batch-size 16 \
   --alpha 0.5 \
   --lambda-geo 0.5 \

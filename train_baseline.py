@@ -11,7 +11,7 @@ from engine import (
     model_cfg,
     parse_epochs,
     resolve_device,
-    save_training_checkpoint,
+    save_model_state,
     set_random_seed,
     train_segmentation_epoch,
 )
@@ -49,12 +49,12 @@ def main():
 
         if val_giou > best_val_giou:
             best_val_giou = val_giou
-            save_training_checkpoint(os.path.join(args.output_dir, "coarse_best.pth"), model, optimizer, scheduler, epoch, args)
+            save_model_state(os.path.join(args.output_dir, "coarse_best.pth"), model)
             print(f"[Baseline] best val gIoU={best_val_giou:.2f}")
 
         if epoch + 1 in snapshot_epochs:
             path = os.path.join(args.output_dir, f"coarse_ep{epoch + 1}.pth")
-            save_training_checkpoint(path, model, optimizer, scheduler, epoch, args)
+            save_model_state(path, model)
             print(f"[Baseline] snapshot saved: {path}")
 
     print(f"[Baseline] finished in {(time.time() - start) / 3600:.2f}h")

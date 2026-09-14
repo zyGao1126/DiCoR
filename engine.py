@@ -1,5 +1,6 @@
 import os
 import random
+import tempfile
 from types import SimpleNamespace
 from typing import Dict, Iterable, Tuple
 
@@ -87,17 +88,17 @@ def load_model_weights(model, ckpt_path: str, label: str = "Model"):
     print(f"[{label}] loaded {ckpt_path}: {msg}")
     return msg
 
-
-def save_training_checkpoint(path: str, model, optimizer, scheduler, epoch: int, args) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "lr_scheduler": scheduler.state_dict() if scheduler is not None else None,
-        "epoch": int(epoch),
-        "args": vars(args),
-    }
-    torch.save(payload, path)
+def save_model_state(path: str, model) -> None:
+    output_dir = os.path.dirname(path)
+    os.makedirs(output_dir, exist_ok=True)
+    state = model.state_dict()
+    cpu_state = state.__class__((key, value.detach().cpu()) for key, value in state.items())
+    if hasattr(state, "_metadata"):
+        cpu_state._metadata = state._metadata
+    with tempfile.TemporaryDirectory(dir=output_dir) as temporary_dir:
+        temporary = os.path.join(temporary_dir, os.path.basename(path))
+        torch.save(cpu_state, temporary)
+        os.replace(temporary, path)
 
 
 def parse_epochs(raw: str) -> Tuple[int, ...]:

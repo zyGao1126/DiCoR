@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 PYTHON=${PYTHON:-python}
 DEVICE=${DEVICE:-cuda:0}
 DATA_ROOT=${DATA_ROOT:-/path/to/RRSIS-D}
-OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/rrsisd}
+OUTPUT_ROOT=${OUTPUT_ROOT:-checkpoints/RRSIS-D}
 COARSE_DIR=${COARSE_DIR:-$OUTPUT_ROOT/coarse}
 
 "$PYTHON" train_baseline.py \
@@ -18,7 +18,7 @@ COARSE_DIR=${COARSE_DIR:-$OUTPUT_ROOT/coarse}
   --swin-type base \
   --num-vmsf-blocks 3 \
   --num-heads-fusion 1 \
-  --visual-fusion lvmsf \
+  --visual-fusion vmsf \
   --batch-size 8 \
   --epochs 40 \
   --lr 3e-5 \
