@@ -7,7 +7,6 @@ __pycache__/
 checkpoints/
 experiments/
 log/
-logs/
 outputs/
 wandb/
 
@@ -15,14 +14,3 @@ pretrained_weights/
 bert-base-uncased/
 datasets/
 data_root/
-prompt_bank/
-
-*.pth
-*.pt
-*.ckpt
-*.mmap
-*.npy
-*.npz
-
-main.pdf
-build_prompt_bank.py
