@@ -73,7 +73,7 @@ The training process first runs train_coarse.sh to optimize the coarse vision-la
 ```bash
 export DEVICE=cuda:0
 export DATA_ROOT=/path/to/RefSegRS
-export OUTPUT_ROOT=checkpoints/refsegrs
+export OUTPUT_ROOT=checkpoints/RefSegRS
 
 bash scripts/refsegrs/train_coarse.sh
 bash scripts/refsegrs/train_dicor.sh
@@ -84,7 +84,7 @@ bash scripts/refsegrs/train_dicor.sh
 ```bash
 export DEVICE=cuda:0
 export DATA_ROOT=/path/to/RISBench
-export OUTPUT_ROOT=checkpoints/risbench
+export OUTPUT_ROOT=checkpoints/RISBench
 
 bash scripts/risbench/train_coarse.sh
 bash scripts/risbench/train_dicor.sh
@@ -95,7 +95,7 @@ bash scripts/risbench/train_dicor.sh
 ```bash
 export DEVICE=cuda:0
 export DATA_ROOT=/path/to/RRSIS-D
-export OUTPUT_ROOT=checkpoints/rrsisd
+export OUTPUT_ROOT=checkpoints/RRSIS-D
 
 bash scripts/rrsisd/train_coarse.sh
 bash scripts/rrsisd/train_dicor.sh
@@ -108,7 +108,7 @@ bash scripts/rrsisd/train_dicor.sh
 ```bash
 DEVICE=cuda:0 \
 DATA_ROOT=/path/to/RefSegRS \
-OUTPUT_ROOT=checkpoints/refsegrs \
+OUTPUT_ROOT=checkpoints/RefSegRS \
 bash scripts/refsegrs/test.sh
 ```
 
@@ -117,7 +117,7 @@ bash scripts/refsegrs/test.sh
 ```bash
 DEVICE=cuda:0 \
 DATA_ROOT=/path/to/RISBench \
-OUTPUT_ROOT=checkpoints/risbench \
+OUTPUT_ROOT=checkpoints/RISBench \
 bash scripts/risbench/test.sh
 ```
 
@@ -126,9 +126,13 @@ bash scripts/risbench/test.sh
 ```bash
 DEVICE=cuda:0 \
 DATA_ROOT=/path/to/RRSIS-D \
-OUTPUT_ROOT=checkpoints/rrsisd \
+OUTPUT_ROOT=checkpoints/RRSIS-D \
 bash scripts/rrsisd/test.sh
 ```
+
+## Model Weights Download
+
+You can access and download the model weights from the [Hugging Face](https://huggingface.co/SammyGao/DiCoR) platform.
 
 ## License
 
