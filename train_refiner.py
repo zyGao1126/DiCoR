@@ -22,7 +22,6 @@ def train_one_epoch(model, criterion, optimizer, scheduler, loader, bank, device
     metric_logger.add_meter("total_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
     metric_logger.add_meter("stage2_ce_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
     metric_logger.add_meter("stage2_dice_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
-    metric_logger.add_meter("stage2_inhibit_loss", utils.SmoothedValue(window_size=20, fmt="{value:.4f}"))
     metric_logger.add_meter("valid_prompts", utils.SmoothedValue(window_size=20, fmt="{value:.0f}"))
 
     for data in metric_logger.log_every(loader, print_freq, f"Refiner Epoch: [{epoch}]"):
@@ -45,7 +44,6 @@ def train_one_epoch(model, criterion, optimizer, scheduler, loader, bank, device
         loss_dict = criterion(
             pred=out["x"],
             targ=target,
-            delta_logits_480=out["delta_logits_480"],
             focus_map=out["focus_map"],
         )
         loss = loss_dict["total_loss"]

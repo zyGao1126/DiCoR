@@ -107,10 +107,7 @@ class Stage2SegLoss(nn.Module):
         pred: torch.Tensor,
         targ: torch.Tensor,
         focus_map: torch.Tensor,
-        delta_logits: torch.Tensor,
-        delta_inhibit_weight: float = 0.0,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        B = pred.shape[0]
         targ = targ.long()
         w_pix = focus_map.to(device=pred.device, dtype=pred.dtype).clamp_min(0.0)
         w_pix2 = w_pix.squeeze(1)
@@ -123,30 +120,19 @@ class Stage2SegLoss(nn.Module):
         dice_per_sample = self._weighted_dice_per_sample(pred, targ, w_pix)
         seg_per_sample = ce_per_sample + self.dice_weight * dice_per_sample
 
-        inhibit_per_sample = pred.new_zeros((B,))
-        if delta_inhibit_weight > 0.0:
-            outside = (1.0 - w_pix2).clamp_min(0.0)
-            out_den = outside.flatten(1).sum(1).clamp_min(1e-6)
-            delta_mag = delta_logits.abs().mean(dim=1)
-            inhibit_per_sample = (delta_mag * outside).flatten(1).sum(1) / out_den
-            seg_per_sample = seg_per_sample + float(delta_inhibit_weight) * inhibit_per_sample
-
         total = seg_per_sample.mean()
         ce_loss = ce_per_sample.mean()
         dice_loss = dice_per_sample.mean()
-        inhibit_loss = inhibit_per_sample.mean()
 
         return total, {
             "stage2_ce_loss": ce_loss,
             "stage2_dice_loss": self.dice_weight * dice_loss,
-            "stage2_inhibit_loss": float(delta_inhibit_weight) * inhibit_loss,
         }
 
 
 class RefinerLoss(nn.Module):
-    def __init__(self, dice_weight: float = 1.0, delta_inhibit_weight: float = 0.05):
+    def __init__(self, dice_weight: float = 1.0):
         super().__init__()
-        self.delta_inhibit_weight = float(delta_inhibit_weight)
         self.register_buffer("ce_weight", torch.tensor([0.9, 1.1], dtype=torch.float))
         self.stage2_loss = Stage2SegLoss(dice_weight=float(dice_weight), ce_weight=self.ce_weight)
 
@@ -154,15 +140,12 @@ class RefinerLoss(nn.Module):
         self,
         pred: torch.Tensor,
         targ: torch.Tensor,
-        delta_logits_480: torch.Tensor,
         focus_map: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         total_loss, loss_dict = self.stage2_loss(
             pred,
             targ.long(),
             focus_map=focus_map,
-            delta_logits=delta_logits_480,
-            delta_inhibit_weight=self.delta_inhibit_weight,
         )
         loss_dict["total_loss"] = total_loss
         return loss_dict
