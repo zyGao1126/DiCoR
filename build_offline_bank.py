@@ -268,7 +268,9 @@ def build_dlg_bank(args, device: torch.device) -> None:
 
     checkpoints = (
         ("best", args.coarse_ckpt),
+        ("ep20", snapshot_path(args.coarse_dir, 20)),
         ("ep30", snapshot_path(args.coarse_dir, 30)),
+        ("ep39", snapshot_path(args.coarse_dir, 39)),
     )
 
     dataset = make_dataset(args, "train")

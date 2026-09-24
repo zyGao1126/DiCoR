@@ -75,20 +75,21 @@ class ReferDataset(data.Dataset):
     def _preprocess_all_data(self):
         tmp_items = []
 
-        # skip some samples that are known to be problematic
-        RRSISD_exclude = ['22187.jpg', '20203.jpg', '00413.jpg', '01072.jpg', '01664.jpg', '03661.jpg', '05125.jpg', '06728.jpg',
-                          '06861.jpg', '09319.jpg', '10579.jpg', '10653.jpg', '11147.jpg', '11898.jpg',
-                          '12492.jpg', '12630.jpg', '14464.jpg', '14915.jpg', '15357.jpg', '15584.jpg',
-                          '15737.jpg', '17068.jpg', '18552.jpg', '18845.jpg', '20235.jpg', '21126.jpg', '07239.jpg']
-        RISBench_exclude = ['train_12443_2.png', 'train_11904_8.png', 'train_11818_2.png', 'train_11785_0.png', 'train_11021_1.png',
-                            'train_10698_0.png', 'train_10222_0.png', 'train_9598_7.png', 'train_9405_1.png', 'train_8518_1.png',
-                            'train_7581_3.png', 'train_7222_1.png', 'train_7008_0.png', 'train_6194_0.png', 'train_6194_1.png', 'train_819_1.png']        
+        # Skip samples that are known to be problematic. 
+        RRSISD_train_exclude = ['22187.jpg', '20203.jpg', '01072.jpg', '01664.jpg', '03661.jpg', '05125.jpg', '06728.jpg',
+                                 '06861.jpg', '09319.jpg', '10579.jpg', '10653.jpg', '11147.jpg', '11898.jpg',
+                                 '12492.jpg', '12630.jpg', '14464.jpg', '14915.jpg', '15357.jpg', '15584.jpg',
+                                 '15737.jpg', '17068.jpg', '18552.jpg', '18845.jpg', '20235.jpg', '21126.jpg', '07239.jpg']
+        RRSISD_test_exclude = ['00413.jpg']
+        RISBench_train_exclude = ['train_12443_2.png', 'train_11904_8.png', 'train_11818_2.png', 'train_11785_0.png', 'train_11021_1.png',
+                                  'train_10698_0.png', 'train_10222_0.png', 'train_9598_7.png', 'train_9405_1.png', 'train_8518_1.png',
+                                  'train_7581_3.png', 'train_7222_1.png', 'train_7008_0.png', 'train_6194_0.png', 'train_6194_1.png', 'train_819_1.png']
 
         for idx, item in enumerate(self.dataset):
-            if item['file_name'] in RRSISD_exclude:
+            if item['file_name'] in RRSISD_train_exclude or item['file_name'] in RRSISD_test_exclude:
                 print('Skipping image:', item['file_name'])
                 continue
-            if item['file_name'] in RISBench_exclude:
+            if item['file_name'] in RISBench_train_exclude:
                 print('Skipping image:', item['file_name'])
                 continue
             
