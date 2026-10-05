@@ -134,6 +134,19 @@ bash scripts/rrsisd/test.sh
 
 You can access and download the model weights from the [Hugging Face](https://huggingface.co/SammyGao/DiCoR) platform.
 
+## Citation
+
+If you find DiCoR useful in your research, please consider citing our [paper](https://arxiv.org/abs/2608.12980):
+
+```bibtex
+@article{gao2026dicor,
+  title={DiCoR: Decoupled Referent Disambiguation and Contour Recalibration for Efficient Referring Remote Sensing Image Segmentation},
+  author={Gao, Ziyang and Jiang, Zhizhuo and Chang, Jingjing and Yang, Yixin and Pan, Yuwen and Mao, Yong-Qiang and Liu, Yu and Chen, Hai-Bao},
+  journal={arXiv preprint arXiv:2608.12980},
+  year={2026}
+}
+```
+
 ## License
 
 This project is released under the [GNU General Public License v3.0](LICENSE).
