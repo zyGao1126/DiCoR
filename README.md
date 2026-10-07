@@ -136,7 +136,7 @@ You can access and download the model weights from the [Hugging Face](https://hu
 
 ## Citation
 
-If you find DiCoR useful in your research, please consider citing our [paper](https://arxiv.org/abs/2608.12980):
+Hope this lib could be helpful. If you use this lib, please kindly acknowledge our work:
 
 ```bibtex
 @article{gao2026dicor,
